@@ -20,7 +20,7 @@ set -e
 # GLOBAL DEFAULTS
 ###############################################################################
 DEFAULT_LOCALE="es"
-DEFAULT_ADDITIONAL_LOCALES="en,fr,de,zh,ar,pt,ru,ja"
+DEFAULT_ADDITIONAL_LOCALES="en,fr,de,zh,ar,pt,ru,ja,de"
 OPENAI_MODEL="gpt-4o-mini"
 MAX_CONCURRENT_REQUESTS=20
 LOCALE_FOLDER="public/locales"
@@ -375,18 +375,21 @@ Refactor the following code to add multilingual support using react-i18next:
 1. Replace all user-facing strings with meaningful translation keys derived from their English strings.
 2. Return ONLY valid JSON with the structure:
    {
-     "updatedCode": "<refactored code>",
+     "needsUpdate": true/false,
+     "updatedCode": "<refactored code or empty if no update is needed>",
      "translations": {
        "<translationKey>": "<original string>",
        ...
      }
    }
-3. "updatedCode" must be the full file content with updated references to the translation keys.
-4. Do not include any additional comments, or explanations.
-5. Do not delete any existing comments unless strictly necessary for the functionality or to fix an error.
-6. Ensure the code compiles, retains its original functionality.
-7. "translations" must contain all of the original user-facing strings keyed by their new i18n keys.
-8. Make sure your JSON is strictly valid and does NOT include code blocks (\`\`\`).
+3. If no changes are required, set "needsUpdate" to false and "updatedCode" to an empty string.
+4. "updatedCode" must be the full file content with updated references to the translation keys, if changes are made.
+5. Do not include any additional comments, explanations, or formatting like code blocks (\`\`\`).
+6. Do not delete any existing comments unless strictly necessary for the functionality or to fix an error.
+7. Ensure the code compiles, retains its original functionality, and is properly formatted.
+8. "translations" must contain all of the original user-facing strings keyed by their new i18n keys.
+9. Avoid adding unnecessary whitespace at the end of lines or when adding new lines.
+10. Make sure your JSON is strictly valid and does NOT include trailing or extra spaces.
 
 Here is the code:
 ${fileContent}`;
@@ -397,18 +400,21 @@ ${fileContent}`;
 2. Replace all user-facing strings with meaningful translation keys derived from their English strings.
 3. Return ONLY valid JSON with the structure:
    {
-     "updatedCode": "<refactored code>",
+     "needsUpdate": true/false,
+     "updatedCode": "<refactored code or empty if no update is needed>",
      "translations": {
        "<translationKey>": "<original string>",
        ...
      }
    }
-4. "updatedCode" must be the full file content with updated references to the translation keys.
-5. Do not include any additional comments, or explanations.
-6. Do not delete any existing comments unless strictly necessary for the functionality or to fix an error.
-7. Ensure the code compiles, retains its original functionality.
-8. "translations" must contain all of the original user-facing strings keyed by their new i18n keys.
-9. Make sure your JSON is strictly valid and does NOT include code blocks (\`\`\`).
+4. If no changes are required, set "needsUpdate" to false and "updatedCode" to an empty string.
+5. "updatedCode" must be the full file content with updated references to the translation keys, if changes are made.
+6. Do not include any additional comments, explanations, or formatting like code blocks (\`\`\`).
+7. Do not delete any existing comments unless strictly necessary for the functionality or to fix an error.
+8. Ensure the code compiles, retains its original functionality, and is properly formatted.
+9. "translations" must contain all of the original user-facing strings keyed by their new i18n keys.
+10. Avoid adding unnecessary whitespace at the end of lines or when adding new lines.
+11. Make sure your JSON is strictly valid and does NOT include trailing or extra spaces.
 
 Here is the code that needs correction:
 ${fileContent}`;
@@ -451,14 +457,16 @@ ${fileContent}`;
     throw new Error(`Failed to parse JSON from OpenAI: ${parseErr.message}`);
   }
 
-  // Validate the updated code
-  let updatedCode = sanitizeCode(parsedJson.updatedCode);
-  if (!validateUpdatedCode(updatedCode, fileContent)) {
-    if (retryCount < 2) {
-      console.warn(`Retrying ${filePath} due to validation issues...`);
-      return processFileWithOpenAI(filePath, retryCount + 1);
+  if (parsedJson.needsUpdate == true) {
+    // Validate the updated code
+    parsedJson.updatedCode = sanitizeCode(parsedJson.updatedCode);
+    if (!validateUpdatedCode(parsedJson.updatedCode, fileContent)) {
+      if (retryCount < 2) {
+        console.warn(`Retrying ${filePath} due to validation issues...`);
+        return processFileWithOpenAI(filePath, retryCount + 1);
+      }
+      throw new Error("Validation failed for updated code after retries.");
     }
-    throw new Error("Validation failed for updated code after retries.");
   }
 
   // Return the entire JSON object
@@ -485,17 +493,21 @@ async function processFiles(files) {
         try {
           log(`🔧 Processing: ${filePath}`);
           // We get { updatedCode, translations } back from OpenAI
-          const { updatedCode, translations } = await processFileWithOpenAI(filePath);
+          const { needsUpdate, updatedCode, translations } = await processFileWithOpenAI(filePath);
           
-          // Write the updated code back to file
-          fs.writeFileSync(filePath, updatedCode, 'utf8');
-          console.log(`✅ Updated file: ${filePath}`);
+          if (needsUpdate == true) {
+            // Write the updated code back to file
+            fs.writeFileSync(filePath, updatedCode, 'utf8');
+            console.log(`✅ Updated file: ${filePath}`);
 
-          // Merge into our allKeys object
-          if (translations && typeof translations === 'object') {
-            for (const [k, v] of Object.entries(translations)) {
-              allKeys[k] = v;
+            // Merge into our allKeys object
+            if (translations && typeof translations === 'object') {
+              for (const [k, v] of Object.entries(translations)) {
+                allKeys[k] = v;
+              }
             }
+          } else {
+            console.error(`✅ Skipping, nothing to update at ${filePath}.`);
           }
         } catch (error) {
           console.error(`❌ Error processing ${filePath}:`, error.message);
