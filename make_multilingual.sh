@@ -20,7 +20,7 @@ set -e
 # GLOBAL DEFAULTS
 ###############################################################################
 DEFAULT_LOCALE="es"
-DEFAULT_ADDITIONAL_LOCALES="en,fr,de,zh,ar,pt,ru,ja,de"
+DEFAULT_ADDITIONAL_LOCALES="en,fr,de,zh,ar,pt,ru,ja"
 OPENAI_MODEL="gpt-4o-mini"
 MAX_CONCURRENT_REQUESTS=20
 LOCALE_FOLDER="public/locales"
@@ -249,13 +249,13 @@ cat <<'NODEJS_SCRIPT' > refactor-i18n.js
  * refactor-i18n.js
  *
  * 1. Gathers & updates Next.js files for i18n using OpenAI.
- * 2. Extracts new i18n keys, merges them into each locale's common.json.
+ * 2. Extracts new i18n keys from the GPT-updated code, merges them into each 
+ *    locale's common.json.
  * 3. (Optionally) translates the default locale's common.json to all other
  *    locales via OpenAI.
  *****************************************************************************/
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 const fetch = require('node-fetch');
 
 // Read environment variables
@@ -286,9 +286,7 @@ if (!OPENAI_API_KEY) {
  * Remove unwanted formatting and ensure a newline at the end
  */
 function sanitizeCode(output) {
-  // Remove Markdown code block formatting if it exists
   let sanitizedOutput = output.replace(/^\s*```[a-zA-Z]*\s*|\s*```$/g, '');
-  // Ensure a newline at the end
   if (!sanitizedOutput.endsWith('\n')) {
     sanitizedOutput += '\n';
   }
@@ -310,6 +308,20 @@ function validateUpdatedCode(newCode, originalCode) {
     return false;
   }
   return true;
+}
+
+/**
+ * extractUsedKeys()
+ * Returns a Set of translation keys found in the code with t("key")
+ */
+function extractUsedKeys(codeString) {
+  const pattern = /t\((["'])([^"']+)\1\)/g;
+  const usedKeys = new Set();
+  let match;
+  while ((match = pattern.exec(codeString)) !== null) {
+    usedKeys.add(match[2]);
+  }
+  return usedKeys;
 }
 
 /**
@@ -350,7 +362,7 @@ function getEligibleFiles(dir) {
       const ext = path.extname(fullPath);
       if (VALID_EXTENSIONS.includes(ext)) {
         const content = fs.readFileSync(fullPath, "utf8");
-        // quick check: if there's already useTranslation/t(, skip
+        // quick check: if there's already useTranslation or t( in it, skip
         if (!/useTranslation|t\(/.test(content) && /<[a-zA-Z]|jsx>/.test(content)) {
           results.push(fullPath);
         }
@@ -363,62 +375,61 @@ function getEligibleFiles(dir) {
 /**
  * processFileWithOpenAI()
  * Sends code to the OpenAI ChatCompletion API for refactoring,
- * returns a JSON object containing:
- *   - updatedCode: the transformed code
- *   - translations: an object with key-value pairs for i18n usage
+ * returns JSON with shape:
+ *   {
+ *     needsUpdate: boolean,
+ *     updatedCode: string,
+ *     translations: { [key: string]: string }
+ *   }
  */
 async function processFileWithOpenAI(filePath, retryCount = 0) {
   const fileContent = fs.readFileSync(filePath, 'utf8');
 
+  // Prompt ensures GPT only returns JSON with needed fields, 
+  // and includes "needsUpdate" = true/false
   let prompt = `You are a Next.js and i18n expert.
 Refactor the following code to add multilingual support using react-i18next:
-1. Replace all user-facing strings with meaningful translation keys derived from their English strings.
+1. Identify all user-facing strings and replace them with meaningful translation keys.
 2. Return ONLY valid JSON with the structure:
    {
      "needsUpdate": true/false,
-     "updatedCode": "<refactored code or empty if no update is needed>",
+     "updatedCode": "<full updated code if needed, otherwise empty>",
      "translations": {
-       "<translationKey>": "<original string>",
-       ...
+       "<translationKey>": "<original string>"
      }
    }
-3. If no changes are required, set "needsUpdate" to false and "updatedCode" to an empty string.
-4. "updatedCode" must be the full file content with updated references to the translation keys, if changes are made.
-5. Do not include any additional comments, explanations, or formatting like code blocks (\`\`\`).
-6. Do not delete any existing comments unless strictly necessary for the functionality or to fix an error.
-7. Ensure the code compiles, retains its original functionality, and is properly formatted.
-8. "translations" must contain all of the original user-facing strings keyed by their new i18n keys.
+3. If no user-facing strings are detected, set "needsUpdate" to false and leave "updatedCode" empty.
+4. "updatedCode" must contain the full file content with updated references to translation keys, if changes are made.
+5. "translations" must include all original user-facing strings keyed by their new i18n keys.
+6. Do not delete existing comments unless strictly necessary for functionality or to fix errors.
+7. Ensure the updated code compiles, retains its original functionality, and is properly formatted.
+8. Do not include any additional comments, explanations, or formatting like code blocks (\`\`\`).
 9. Avoid adding unnecessary whitespace at the end of lines or when adding new lines.
-10. Make sure your JSON is strictly valid and does NOT include trailing or extra spaces.
 
 Here is the code:
 ${fileContent}`;
 
   if (retryCount > 0) {
-    prompt = `The previous update attempt for this file failed. Please ensure the following corrections:
-1. Fix any issues in the code to ensure it compiles successfully.
-2. Replace all user-facing strings with meaningful translation keys derived from their English strings.
-3. Return ONLY valid JSON with the structure:
+    prompt = `The previous update attempt failed. Please ensure the following corrections:
+1. Return valid JSON with the structure:
    {
      "needsUpdate": true/false,
-     "updatedCode": "<refactored code or empty if no update is needed>",
+     "updatedCode": "<full updated code if needed, otherwise empty>",
      "translations": {
-       "<translationKey>": "<original string>",
-       ...
+       "<translationKey>": "<original string>"
      }
    }
-4. If no changes are required, set "needsUpdate" to false and "updatedCode" to an empty string.
-5. "updatedCode" must be the full file content with updated references to the translation keys, if changes are made.
-6. Do not include any additional comments, explanations, or formatting like code blocks (\`\`\`).
-7. Do not delete any existing comments unless strictly necessary for the functionality or to fix an error.
-8. Ensure the code compiles, retains its original functionality, and is properly formatted.
-9. "translations" must contain all of the original user-facing strings keyed by their new i18n keys.
-10. Avoid adding unnecessary whitespace at the end of lines or when adding new lines.
-11. Make sure your JSON is strictly valid and does NOT include trailing or extra spaces.
+2. If no user-facing strings are detected, set "needsUpdate" to false and leave "updatedCode" empty.
+3. Ensure "updatedCode" compiles and i18n is properly added.
+4. "translations" must only contain relevant keys and their original strings.
+5. Do not include code fences, extra comments, or explanations.
+6. Ensure the code compiles, retains its original functionality, and is properly formatted.
+7. Avoid adding unnecessary whitespace at the end of lines or when adding new lines.
 
 Here is the code that needs correction:
 ${fileContent}`;
   }
+
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -445,22 +456,20 @@ ${fileContent}`;
     throw new Error("Invalid response from OpenAI: No content returned.");
   }
 
-  // Attempt to parse JSON
-  let parsedJson;
+  let parsed;
   try {
-    parsedJson = JSON.parse(gptMessage.trim());
-  } catch (parseErr) {
+    parsed = JSON.parse(gptMessage.trim());
+  } catch (err) {
     if (retryCount < 2) {
       console.warn(`Retrying ${filePath} due to JSON parse error...`);
       return processFileWithOpenAI(filePath, retryCount + 1);
     }
-    throw new Error(`Failed to parse JSON from OpenAI: ${parseErr.message}`);
+    throw new Error(`Failed to parse JSON: ${err.message}`);
   }
 
-  if (parsedJson.needsUpdate == true) {
-    // Validate the updated code
-    parsedJson.updatedCode = sanitizeCode(parsedJson.updatedCode);
-    if (!validateUpdatedCode(parsedJson.updatedCode, fileContent)) {
+  if (parsed.needsUpdate) {
+    parsed.updatedCode = sanitizeCode(parsed.updatedCode);
+    if (!validateUpdatedCode(parsed.updatedCode, fileContent)) {
       if (retryCount < 2) {
         console.warn(`Retrying ${filePath} due to validation issues...`);
         return processFileWithOpenAI(filePath, retryCount + 1);
@@ -469,14 +478,13 @@ ${fileContent}`;
     }
   }
 
-  // Return the entire JSON object
-  return parsedJson;
+  return parsed;
 }
 
 /**
  * processFiles()
- * - Processes the identified files with OpenAI in parallel
- * - Merges returned translations into each locale's common.json
+ * - Processes each file with OpenAI, then merges final used keys 
+ *   into each locale's common.json
  */
 async function processFiles(files) {
   const allKeys = {};
@@ -492,22 +500,31 @@ async function processFiles(files) {
       batch.map(async (filePath) => {
         try {
           log(`🔧 Processing: ${filePath}`);
-          // We get { updatedCode, translations } back from OpenAI
           const { needsUpdate, updatedCode, translations } = await processFileWithOpenAI(filePath);
           
-          if (needsUpdate == true) {
-            // Write the updated code back to file
-            fs.writeFileSync(filePath, updatedCode, 'utf8');
-            console.log(`✅ Updated file: ${filePath}`);
+          if (!needsUpdate) {
+            console.log(`⏩ No update needed for ${filePath}`);
+            return;
+          }
 
-            // Merge into our allKeys object
-            if (translations && typeof translations === 'object') {
-              for (const [k, v] of Object.entries(translations)) {
-                allKeys[k] = v;
-              }
+          // Write updated code to disk
+          fs.writeFileSync(filePath, updatedCode, 'utf8');
+          console.log(`✅ Updated file: ${filePath}`);
+
+          // 1) Parse the updated code for actually used keys
+          const usedKeys = extractUsedKeys(updatedCode);
+
+          // 2) Filter out any keys that aren't used in the code
+          const finalKeys = {};
+          for (const [k, v] of Object.entries(translations || {})) {
+            if (usedKeys.has(k)) {
+              finalKeys[k] = v;
             }
-          } else {
-            console.error(`✅ Skipping, nothing to update at ${filePath}.`);
+          }
+
+          // 3) Merge finalKeys into the global allKeys
+          for (const [k, v] of Object.entries(finalKeys)) {
+            allKeys[k] = v;
           }
         } catch (error) {
           console.error(`❌ Error processing ${filePath}:`, error.message);
@@ -516,7 +533,7 @@ async function processFiles(files) {
     );
   }
 
-  // Now we have all translations from all processed files in allKeys
+  // If we have any new keys, update each locale's common.json
   if (Object.keys(allKeys).length > 0) {
     updateCommonJson(allKeys);
   }
@@ -537,20 +554,18 @@ async function autoTranslateCommonJson() {
 
   const defaultData = JSON.parse(fs.readFileSync(defaultCommonFilePath, 'utf8'));
   if (!defaultData || Object.keys(defaultData).length === 0) {
-    console.log(`Default locale ( ${DEFAULT_LOCALE} ) common.json is empty or invalid.`);
+    console.log(`Default locale (${DEFAULT_LOCALE}) common.json is empty or invalid.`);
     return;
   }
 
   const translationsPerLocale = {};
 
-  // We'll gather all translations first, then write them to files
   for (const locale of ADDITIONAL_LOCALES) {
     if (locale === DEFAULT_LOCALE) continue; // skip if same
     console.log(`Translating from ${DEFAULT_LOCALE} to ${locale}...`);
     translationsPerLocale[locale] = {};
 
     for (const [key, value] of Object.entries(defaultData)) {
-      // do a minimal check
       if (!value || typeof value !== "string") {
         translationsPerLocale[locale][key] = value;
         continue;
@@ -561,13 +576,12 @@ async function autoTranslateCommonJson() {
         translationsPerLocale[locale][key] = translatedText;
       } catch (err) {
         console.error(`Error translating key "${key}":`, err.message);
-        // fallback to original
-        translationsPerLocale[locale][key] = value;
+        translationsPerLocale[locale][key] = value; // fallback
       }
     }
   }
 
-  // Now write out the new translations
+  // Write out the new translations
   for (const locale of ADDITIONAL_LOCALES) {
     if (locale === DEFAULT_LOCALE) continue;
     const localeFilePath = path.join(LOCALE_FOLDER, locale, 'common.json');
@@ -588,7 +602,7 @@ async function openaiTranslateText(text, fromLang, toLang) {
   const prompt = `Please translate the following text from ${fromLang} to ${toLang}:
 Text: "${text}".
 Return only the translation, without quotes or extra commentary.`;
-  
+
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -610,7 +624,7 @@ Return only the translation, without quotes or extra commentary.`;
 
   const result = await response.json();
   const translation = result?.choices?.[0]?.message?.content?.trim();
-  return translation || text; // fallback to original if something is weird
+  return translation || text;
 }
 
 // MAIN ENTRY
