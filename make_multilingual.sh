@@ -313,22 +313,6 @@ function validateUpdatedCode(newCode, originalCode) {
 }
 
 /**
- * extractTranslationKeysFromContent()
- * Looks for t("SomeKey") calls and returns them as key => "SomeKey"
- */
-function extractTranslationKeysFromContent(content) {
-  const regex = /t\((["'])(.*?)\1\)/g;
-  const keys = {};
-  let match;
-  while ((match = regex.exec(content)) !== null) {
-    // turn "Some Key?" into "Some-Key-"
-    const key = match[1].replace(/[^a-zA-Z0-9]/g, '-');
-    keys[key] = match[1];
-  }
-  return keys;
-}
-
-/**
  * updateCommonJson()
  * Merges new keys into each locale's common.json
  */
@@ -366,6 +350,7 @@ function getEligibleFiles(dir) {
       const ext = path.extname(fullPath);
       if (VALID_EXTENSIONS.includes(ext)) {
         const content = fs.readFileSync(fullPath, "utf8");
+        // quick check: if there's already useTranslation/t(, skip
         if (!/useTranslation|t\(/.test(content) && /<[a-zA-Z]|jsx>/.test(content)) {
           results.push(fullPath);
         }
@@ -385,7 +370,6 @@ function getEligibleFiles(dir) {
 async function processFileWithOpenAI(filePath, retryCount = 0) {
   const fileContent = fs.readFileSync(filePath, 'utf8');
 
-  // --- Prompt #1 (initial) and Prompt #2 (retry)
   let prompt = `You are a Next.js and i18n expert.
 Refactor the following code to add multilingual support using react-i18next:
 1. Replace all user-facing strings with meaningful translation keys derived from their English strings.
@@ -430,7 +414,6 @@ Here is the code that needs correction:
 ${fileContent}`;
   }
 
-  // Make OpenAI request
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -461,7 +444,6 @@ ${fileContent}`;
   try {
     parsedJson = JSON.parse(gptMessage.trim());
   } catch (parseErr) {
-    // If JSON parsing fails, optionally retry
     if (retryCount < 2) {
       console.warn(`Retrying ${filePath} due to JSON parse error...`);
       return processFileWithOpenAI(filePath, retryCount + 1);
@@ -479,18 +461,18 @@ ${fileContent}`;
     throw new Error("Validation failed for updated code after retries.");
   }
 
-  // Return the entire JSON object, which includes:
-  // { updatedCode: "...", translations: { ... } }
+  // Return the entire JSON object
   return parsedJson;
 }
 
 /**
  * processFiles()
  * - Processes the identified files with OpenAI in parallel
- * - Extracts new translation keys, merges into each locale's common.json
+ * - Merges returned translations into each locale's common.json
  */
 async function processFiles(files) {
   const allKeys = {};
+
   // batch for concurrency
   const batches = [];
   for (let i = 0; i < files.length; i += MAX_CONCURRENT_REQUESTS) {
@@ -502,13 +484,18 @@ async function processFiles(files) {
       batch.map(async (filePath) => {
         try {
           log(`🔧 Processing: ${filePath}`);
-          const updatedCode = await processFileWithOpenAI(filePath);
+          // We get { updatedCode, translations } back from OpenAI
+          const { updatedCode, translations } = await processFileWithOpenAI(filePath);
+          
+          // Write the updated code back to file
           fs.writeFileSync(filePath, updatedCode, 'utf8');
           console.log(`✅ Updated file: ${filePath}`);
-          // collect new keys
-          const newKeys = extractTranslationKeysFromContent(updatedCode);
-          for (const [k, v] of Object.entries(newKeys)) {
-            allKeys[k] = v;
+
+          // Merge into our allKeys object
+          if (translations && typeof translations === 'object') {
+            for (const [k, v] of Object.entries(translations)) {
+              allKeys[k] = v;
+            }
           }
         } catch (error) {
           console.error(`❌ Error processing ${filePath}:`, error.message);
@@ -517,6 +504,7 @@ async function processFiles(files) {
     );
   }
 
+  // Now we have all translations from all processed files in allKeys
   if (Object.keys(allKeys).length > 0) {
     updateCommonJson(allKeys);
   }
@@ -549,9 +537,8 @@ async function autoTranslateCommonJson() {
     console.log(`Translating from ${DEFAULT_LOCALE} to ${locale}...`);
     translationsPerLocale[locale] = {};
 
-    // We can do this in parallel as well, but let's keep it simpler
     for (const [key, value] of Object.entries(defaultData)) {
-      // do a minimal check for empty
+      // do a minimal check
       if (!value || typeof value !== "string") {
         translationsPerLocale[locale][key] = value;
         continue;
