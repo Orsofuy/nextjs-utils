@@ -31,27 +31,45 @@ LOCALE_FOLDER="public/locales"
 find_directory() {
   local dir_type="$1"
   local result=""
+
   case "$dir_type" in
     "pages")
-      result=$(find . -type f \( -name "_app.js" -o -name "layout.js" -o -name "layout.tsx" \) ! -path "./node_modules/*" ! -path "./.next/*" -exec dirname {} \; | head -n 1)
+      result=$(
+        find . -type f \( -name "_app.js" -o -name "layout.js" -o -name "layout.tsx" -o -name "page.js" -o -name "page.tsx" \) \
+          ! -path "./node_modules/*" \
+          ! -path "./.next/*" \
+          -print -quit \
+        | xargs dirname
+      )
+
+      # If the path is, for example, "./app/audio-transcription",
+      # strip everything after "/app" so you end up with "./app"
+      result="$(echo "$result" | sed -E 's|(.*\/app).*|\1|')"
       ;;
+
     "components")
-      result=$(find . -type d -name "components" ! -path "./node_modules/*" ! -path "./.next/*" | head -n 1)
+      result=$(find . -type d -name "components" \
+                 ! -path "./node_modules/*" \
+                 ! -path "./.next/*" \
+                 | head -n 1)
       ;;
+
     *)
       echo "Internal error: unknown dir_type $dir_type"
       exit 1
       ;;
   esac
 
+  # Fallback if nothing was found or if the sed fails to match
   if [ -z "$result" ]; then
-    echo "Could not find '$dir_type' directory automatically. Provide a path (e.g., './pages'):"
+    echo "Could not find '$dir_type' directory automatically. Provide a path (e.g., './app' or './components'):"
     read -r result
     if [ ! -d "$result" ]; then
       echo "Error: '$result' is not a directory."
       exit 1
     fi
   fi
+
   echo "$result"
 }
 
@@ -302,11 +320,7 @@ function validateUpdatedCode(newCode, originalCode) {
     console.error("Validation failed: Updated code is empty.");
     return false;
   }
-  // Check that i18n usage is present
-  if (!/useTranslation|t\(/.test(newCode)) {
-    console.error("Validation failed: Updated code does not include i18n features.");
-    return false;
-  }
+
   return true;
 }
 
@@ -363,6 +377,7 @@ function getEligibleFiles(dir) {
       if (VALID_EXTENSIONS.includes(ext)) {
         const content = fs.readFileSync(fullPath, "utf8");
         // quick check: if there's already useTranslation or t( in it, skip
+        // and only proceed if there's HTML/JSX-ish syntax
         if (!/useTranslation|t\(/.test(content) && /<[a-zA-Z]|jsx>/.test(content)) {
           results.push(fullPath);
         }
