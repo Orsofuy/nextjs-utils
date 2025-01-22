@@ -56,30 +56,30 @@ const COMPONENTS_CANDIDATES = ['components', 'src/components'];
 
 // ----- Reference costs (per 1K tokens) - last update 01/16/2025 ------
 const COST_PER_1K_TOKENS = {
-  'input': {
+  input: {
     'gpt-4o': 0.0025,
     'gpt-4o-mini': 0.00015,
     'gpt-4': 0.03,
   },
-  'output': {
+  output: {
     'gpt-4o': 0.01,
     'gpt-4o-mini': 0.0006,
     'gpt-4': 0.06,
-  }
+  },
 };
 
 // -------------------------------------------------------------------------------------
 // Parse Command-Line Arguments
 // -------------------------------------------------------------------------------------
-let UNATTENDED = false;        // (i.e. -y/--yes)
+let UNATTENDED = false; // (i.e. -y/--yes)
 let OPENAI_MODEL = DEFAULTS.OPENAI_MODEL;
 let MAX_CONCURRENT_REQUESTS = DEFAULTS.MAX_CONCURRENT_REQUESTS;
 let DEFAULT_LOCALE = DEFAULTS.DEFAULT_LOCALE;
 let ADDITIONAL_LOCALES = DEFAULTS.DEFAULT_ADDITIONAL_LOCALES; // string, comma-separated
 let LOCALE_FOLDER = DEFAULTS.LOCALE_FOLDER;
 let PACKAGE_MANAGER = DEFAULTS.PACKAGE_MANAGER;
-let DRY_RUN = false;           // (i.e. --dry-run)
-let VERBOSE = false;           // (i.e. -v/--verbose)
+let DRY_RUN = false; // (i.e. --dry-run)
+let VERBOSE = false; // (i.e. -v/--verbose)
 let PAGES_DIR_OVERRIDE = null; // (i.e. --pages-dir)
 let COMPONENTS_DIR_OVERRIDE = null; // (i.e. --components-dir)
 
@@ -185,8 +185,9 @@ const previosFixIntentsByFile = {};
 // -------------------------------------------------------------------------------------
 // Consts
 // -------------------------------------------------------------------------------------
-const FIX_ERROR = "FIX_ERROR";
-const REFACTOR = "REFACTOR";
+const FIX_ERROR = 'FIX_ERROR';
+const REFACTOR = 'REFACTOR';
+const EXTRACT_ERRORS = 'EXTRACT_ERRORS'; // NEW TASK for extracting errors from logs
 const MAX_BUILD_ATTEMPTS = 5;
 
 // -------------------------------------------------------------------------------------
@@ -241,7 +242,7 @@ function getAllLocales() {
 // Step 2: Install dependencies (using yarn, npm, or pnpm)
 // -------------------------------------------------------------------------------------
 function stepInstallDependencies() {
-  console.log("📦 Installing next-i18next & i18n dependencies...");
+  console.log('📦 Installing next-i18next & i18n dependencies...');
 
   const dependencies = [
     'next-i18next',
@@ -302,7 +303,7 @@ function stepUpdateNextConfig() {
   }
 
   const fileData = fs.readFileSync('next.config.js', 'utf8');
-  if (!fileData.includes("next-i18next.config")) {
+  if (!fileData.includes('next-i18next.config')) {
     // Insert the import statement at the top
     let updatedData = `const { i18n } = require('./next-i18next.config');\n` + fileData;
 
@@ -318,9 +319,9 @@ function stepUpdateNextConfig() {
     }
 
     fs.writeFileSync('next.config.js', updatedData, 'utf8');
-    console.log("✅ next.config.js updated to reference i18n config.");
+    console.log('✅ next.config.js updated to reference i18n config.');
   } else {
-    console.log("ℹ️ next.config.js already references i18n. Skipping update.");
+    console.log('ℹ️ next.config.js already references i18n. Skipping update.');
   }
 }
 
@@ -329,7 +330,7 @@ function stepUpdateNextConfig() {
 // -------------------------------------------------------------------------------------
 function stepCreateLocalesFolder() {
   const allLocales = getAllLocales();
-  console.log("📁 Creating localization folder structure...");
+  console.log('📁 Creating localization folder structure...');
   if (!fs.existsSync(LOCALE_FOLDER)) {
     fs.mkdirSync(LOCALE_FOLDER, { recursive: true });
   }
@@ -357,7 +358,7 @@ async function detectOrPromptPagesComponentsDir(projectDir) {
     const verifiedComponents = await verifyDirectory(COMPONENTS_DIR_OVERRIDE, 'components');
     return {
       pagesDir: verifiedPages,
-      componentsDir: verifiedComponents
+      componentsDir: verifiedComponents,
     };
   }
 
@@ -372,10 +373,7 @@ async function detectOrPromptPagesComponentsDir(projectDir) {
       };
     }
     // If no auto-detect for components, prompt user (if not UNATTENDED)
-    const finalComponents = await promptDirectoryIfNeeded(
-      "components directory",
-      COMPONENTS_CANDIDATES
-    );
+    const finalComponents = await promptDirectoryIfNeeded('components directory', COMPONENTS_CANDIDATES);
     return {
       pagesDir: verifiedPages,
       componentsDir: finalComponents,
@@ -391,7 +389,7 @@ async function detectOrPromptPagesComponentsDir(projectDir) {
         componentsDir: verifiedComponents,
       };
     }
-    const finalPages = await promptDirectoryIfNeeded("pages/app directory", PAGES_CANDIDATES);
+    const finalPages = await promptDirectoryIfNeeded('pages/app directory', PAGES_CANDIDATES);
     return {
       pagesDir: finalPages,
       componentsDir: verifiedComponents,
@@ -475,9 +473,7 @@ async function detectNextAppAndComponents(projectDir) {
 
   // 4. If neither is found, we throw an error so we can proceed to prompt or fail
   if (!appDir && !componentsDir) {
-    throw new Error(
-      `❌ No common Next.js "pages/app" or "components" directory found.`
-    );
+    throw new Error(`❌ No common Next.js "pages/app" or "components" directory found.`);
   }
   // We'll allow partial detection; if only one is found, that's still okay
   return { appDir, componentsDir };
@@ -524,7 +520,7 @@ function findFirstExistingCandidate(projectDir, candidates) {
 // -------------------------------------------------------------------------------------
 function stepCreateLanguagePicker(componentsDir) {
   const allLocales = getAllLocales();
-  console.log("🛠 Creating LanguagePicker component...");
+  console.log('🛠 Creating LanguagePicker component...');
 
   if (componentsDir && !fs.existsSync(componentsDir)) {
     fs.mkdirSync(componentsDir, { recursive: true });
@@ -592,14 +588,13 @@ function getEligibleFiles(dir) {
         ) {
           results.push(fullPath);
         } else if (VERBOSE) {
-          console.log(`- Skipping non matching criteria file: ${fullPath}`)
+          console.log(`- Skipping non matching criteria file: ${fullPath}`);
         }
       }
     }
   }
   return results;
 }
-
 
 async function runRefactorAndTranslations(directoriesToScan) {
   // We'll embed the entire logic that was in refactor-i18n.js here.
@@ -612,7 +607,7 @@ async function runRefactorAndTranslations(directoriesToScan) {
 
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
   if (!OPENAI_API_KEY) {
-    console.error("❌ Error: OPENAI_API_KEY is not set in the environment.");
+    console.error('❌ Error: OPENAI_API_KEY is not set in the environment.');
     return;
   }
 
@@ -626,11 +621,11 @@ async function runRefactorAndTranslations(directoriesToScan) {
   }
 
   if (eligibleFiles.length === 0) {
-    console.log("✅ No eligible files found for i18n refactoring in those directories. Skipping to auto-translation...");
+    console.log('✅ No eligible files found for i18n refactoring in those directories. Skipping to auto-translation...');
   } else {
     console.log(`Found ${eligibleFiles.length} file(s) to process with OpenAI...`);
     if (VERBOSE) {
-      console.log("List of files to refactor:");
+      console.log('List of files to refactor:');
       eligibleFiles.forEach((f) => console.log(` - ${f}`));
     }
   }
@@ -645,7 +640,7 @@ async function runRefactorAndTranslations(directoriesToScan) {
   else if (!UNATTENDED) {
     const proceed = await doApproximateCostCheck(eligibleFiles, false);
     if (!proceed) {
-      console.log("Aborting per user choice. No OpenAI calls will be made.");
+      console.log('Aborting per user choice. No OpenAI calls will be made.');
       return;
     }
   }
@@ -666,22 +661,20 @@ async function doApproximateCostCheck(eligibleFiles, isDryRunMode) {
   console.log(`\n--- COST ESTIMATE ---`);
   console.log(`Files count: ${eligibleFiles.length}`);
   console.log(`Model: ${OPENAI_MODEL}`);
-  console.log(`Approx. input tokens needed: ${approxTokensNeeded} (using same to calculate output)`);
+  console.log(
+    `Approx. input tokens needed: ${approxTokensNeeded} (using same to calculate output)`
+  );
   console.log(`Estimated costs:`);
   console.log(`- input: ~$${approxInputCost.toFixed(4)} (at ${inputRate}/1k tokens)`);
   console.log(`- output: ~$${approxOutputCost.toFixed(4)} (at ${outputRate}/1k tokens)`);
   console.log(`- TOTAL: ~$${(approxOutputCost + approxOutputCost).toFixed(4)}\n`);
 
-
   if (isDryRunMode) {
-    console.log("Dry-run mode only. No calls made.");
+    console.log('Dry-run mode only. No calls made.');
     return false;
   }
 
-  const answer = await prompt(
-    "Do you want to proceed with these AI calls? (yes/no)",
-    "no"
-  );
+  const answer = await prompt('Do you want to proceed with these AI calls? (yes/no)', 'no');
   return /^y(es)?$/i.test(answer);
 }
 
@@ -770,11 +763,15 @@ function extractUsedKeys(code) {
 
 // Actually call OpenAI to refactor
 async function processFileWithOpenAI(prompt, filePath, retryCount = 0) {
-  console.log("processFileWithOpenAI - prompt", prompt)
+  if (!fetch) {
+    const { default: f } = await import('node-fetch');
+    fetch = f;
+  }
+
   const body = {
     model: OPENAI_MODEL,
-    messages: [{ role: 'user', content: prompt }]
-  }
+    messages: [{ role: 'user', content: prompt }],
+  };
   if (OPENAI_MODEL.includes('gpt-')) {
     body.max_tokens = 4096;
     body.temperature = 0.2;
@@ -787,7 +784,7 @@ async function processFileWithOpenAI(prompt, filePath, retryCount = 0) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -798,12 +795,11 @@ async function processFileWithOpenAI(prompt, filePath, retryCount = 0) {
   const result = await response.json();
   const gptMessage = result?.choices?.[0]?.message?.content;
   if (!gptMessage) {
-    throw new Error("Invalid response from OpenAI: No content returned.");
+    throw new Error('Invalid response from OpenAI: No content returned.');
   }
 
   let parsed;
   try {
-    console.log({gptMessage})
     parsed = JSON.parse(gptMessage.trim());
   } catch (err) {
     if (retryCount < 2) {
@@ -820,18 +816,77 @@ async function processFileWithOpenAI(prompt, filePath, retryCount = 0) {
         console.warn(`Retrying ${filePath} due to validation issues...`);
         return processFileWithOpenAI(prompt, filePath, retryCount + 1);
       }
-      throw new Error("Validation failed for updated code after retries.");
+      throw new Error('Validation failed for updated code after retries.');
     }
   }
 
   return parsed;
 }
 
-function getTaskPrompt(task, fileContent, retryCount = 0, compileErrors = "", previosFixIntents = []) {
-  let prompt = "You are a Next.js and i18n expert.";
+// NEW HELPER for logs-based processing, similar to processFileWithOpenAI but no real file path
+async function processLogsWithOpenAI(logs, retryCount = 0) {
+  if (!fetch) {
+    const { default: f } = await import('node-fetch');
+    fetch = f;
+  }
+
+  const promptText = getTaskPrompt(EXTRACT_ERRORS, logs, retryCount);
+  const body = {
+    model: OPENAI_MODEL,
+    messages: [{ role: 'user', content: promptText }],
+  };
+
+  if (OPENAI_MODEL.includes('gpt-')) {
+    body.max_tokens = 4000;
+    body.temperature = 0.2;
+  } else {
+    body.max_completion_tokens = 3000;
+  }
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`OpenAI API Error: ${response.status} - ${error}`);
+  }
+
+  const result = await response.json();
+  const gptMessage = result?.choices?.[0]?.message?.content;
+  if (!gptMessage) {
+    throw new Error('Invalid response from OpenAI: No content returned.');
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(gptMessage.trim());
+  } catch (err) {
+    if (retryCount < 2) {
+      console.warn(`Retrying logs-based extraction due to JSON parse error...`);
+      return processLogsWithOpenAI(logs, retryCount + 1);
+    }
+    throw new Error(`Failed to parse JSON: ${err.message}`);
+  }
+
+  // We expect a structure like { "extractedErrors": [ ... ] }
+  if (!parsed.extractedErrors || !Array.isArray(parsed.extractedErrors)) {
+    throw new Error('Missing or invalid "extractedErrors" in the AI response.');
+  }
+
+  return parsed.extractedErrors;
+}
+
+function getTaskPrompt(task, fileContent = undefined, retryCount = 0, compileErrors = '', previosFixIntents = []) {
+  let prompt = 'You are a Next.js and i18n expert.';
 
   switch (task) {
-    case FIX_ERROR:
+    case REFACTOR:
       prompt += `\nRefactor the following code to add multilingual support using react-i18next:
 1. Identify all user-facing strings and replace them with meaningful translation keys.
 2. Return ONLY valid JSON with the structure:
@@ -847,11 +902,12 @@ function getTaskPrompt(task, fileContent, retryCount = 0, compileErrors = "", pr
 5. "translations" must include all original user-facing strings keyed by their new i18n keys.
 6. Do not include any additional comments, explanations, or code fences.
 7. IMPORTANT: Ensure the updated code compiles and retains functionality.
-8. Do not delete existing comments unless strictly necessary for functionality or to fix errors.
-9. Do not include any additional comments, explanations, or formatting like code blocks (\`\`\`).`;
-      break
+8. Do not delete existing comments.
+9. Do modify any import path.
+10. Do not include any additional comments, explanations, or formatting like code blocks (\`\`\`).`;
+      break;
 
-    case REFACTOR:
+    case FIX_ERROR:
       prompt += `\nFix the following code caused a build error:
 
 Current error: ${compileErrors}
@@ -860,18 +916,48 @@ Current error: ${compileErrors}
 2. Return ONLY valid JSON with the structure:
 {
   "fixExplanation": "Short but detailed fix explanation.",
-  "updatedCode": "<full updated code>",
+  "updatedCode": "<full updated code>"
+}`;
+      break;
+
+    case EXTRACT_ERRORS:
+      prompt += `
+We have a Next.js build log that may contain multiple errors with various syntax. 
+Please parse all errors and produce a standardized JSON. 
+- Return ONLY valid JSON, no extra commentary or code fences.
+- The JSON must have this structure:
+
+{
+  "extractedErrors": [
+    {
+      "filePath": "Absolute or relative path to file (if any).",
+      "errorDescription": "The full error message/description.",
+      "fixProposal": "A short high-level fix suggestion for that error."
+    },
+    ...
+  ]
 }
+
+- If no errors, "extractedErrors" can be an empty array.
+- Do not include any explanation outside of that JSON.
+
+Here is the entire build log to parse:
+${fileContent}
+
+If the format is not perfect, try your best to extract meaningful "filePath", "errorDescription", and a short "fixProposal" from each error.
 `;
-      break
+      break;
+
     default:
-      throw new Error("Invalid TASK identifier.");
+      throw new Error('Invalid TASK identifier.');
   }
 
-  prompt += `\nHere is the code to update:\n${fileContent}\n`;
+  if (!!fileContent) {
+    prompt += `\nHere is the code/log content:\n${fileContent}\n`;
+  }
 
   if (previosFixIntents?.length > 0) {
-    prompt += `Prevous Fixes intents: ${previosFixIntents}`
+    prompt += `Prevous Fixes intents: ${previosFixIntents}`;
   }
 
   if (retryCount > 0) {
@@ -880,7 +966,6 @@ Current error: ${compileErrors}
 
   return prompt;
 }
-
 
 function sanitizeCode(output) {
   // Remove triple backticks
@@ -893,7 +978,7 @@ function sanitizeCode(output) {
 
 function validateUpdatedCode(newCode) {
   if (!newCode || newCode.trim().length === 0) {
-    console.error("Validation failed: Updated code is empty.");
+    console.error('Validation failed: Updated code is empty.');
     return false;
   }
   // We could do more checks, but let's keep it simple.
@@ -954,6 +1039,11 @@ async function autoTranslateCommonJson() {
 }
 
 async function openaiTranslateText(text, fromLang, toLang) {
+  if (!fetch) {
+    const { default: f } = await import('node-fetch');
+    fetch = f;
+  }
+
   const prompt = `Please translate the following text from ${fromLang} to ${toLang}:
 Text: "${text}".
 Return only the translation, with no extra commentary.`;
@@ -961,7 +1051,7 @@ Return only the translation, with no extra commentary.`;
   const body = {
     model: OPENAI_MODEL,
     messages: [{ role: 'user', content: prompt }],
-  }
+  };
   if (OPENAI_MODEL.includes('gpt-')) {
     body.max_tokens = 1000;
     body.temperature = 0;
@@ -974,7 +1064,7 @@ Return only the translation, with no extra commentary.`;
       'Content-Type': 'application/json',
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -987,83 +1077,26 @@ Return only the translation, with no extra commentary.`;
   return translation || text;
 }
 
-
-async function checkProjectHealth() {
-  console.log("🚀 Starting project build...");
-  let attempt = 1;
-
-  while (attempt <= MAX_BUILD_ATTEMPTS) {
-    try {
-      console.log(`🔄 Attempt ${attempt} to build the project...`);
-      execSync(`${PACKAGE_MANAGER} run build`, { stdio: 'pipe' });
-      console.log("✅ Build succeeded!");
-      return true; // Exit if build is successful
-    } catch (error) {
-      console.error(`❌ Build failed on attempt ${attempt}. Parsing errors: ${error.message}`);
-      const logs = error.stderr.toString();
-      const fixed = await analyzeAndFixErrors(logs, attempt);
-
-      if (!fixed) {
-        console.error("⚠️ Errors could not be fixed. Halting further attempts.");
-        return false;
-      }
-
-      attempt++;
-    }
+// -------------------------------------------------------------------------------------
+// Uses AI-based log parsing
+// -------------------------------------------------------------------------------------
+async function extractFullErrorMessages(logs) {
+  try {
+    return processLogsWithOpenAI(logs);
+  } catch (err) {
+    console.error('❌ Failed to extract errors from logs:', err.message);
+    return [];
   }
-
-  console.error("❌ Project build failed after maximum attempts.");
-  return false;
 }
 
-
-function extractFullErrorMessages(logs) {
-  const errorMessages = [];
-  const lines = logs.split('\n');
-  let currentFilePath = null;
-  let index = 0;
-
-  while (index < lines.length) {
-    const line = lines[index].trim();
-
-    if (line.includes('.tsx') || line.includes('.js')) {
-      // Capture the current file path
-      currentFilePath = line;
-      index++;
-      continue;
-    }
-
-    if (line.toLowerCase().includes('error:')) {
-      // Start collecting error details
-      const errorParts = [line];
-      index++;
-
-      // Collect all lines until a new "Error:" or file path
-      while (index < lines.length && !lines[index].includes('.tsx') && !lines[index].includes('.js')) {
-        errorParts.push(lines[index].trim());
-        index++;
-      }
-
-      // Add the full error message to the result
-      if (currentFilePath) {
-        errorMessages.push({
-          filePath: currentFilePath,
-          errorDescription: errorParts.join(' '),
-        });
-      }
-    } else {
-      index++;
-    }
-  }
-
-  return errorMessages;
-}
-
+// -------------------------------------------------------------------------------------
+// Analyze and fix errors using the new AI-based extractFullErrorMessages
+// -------------------------------------------------------------------------------------
 async function analyzeAndFixErrors(logs, attempt) {
-
   let fixedAnyFile = false;
 
-  const errorLines = extractFullErrorMessages(logs)
+  const errorLines = await extractFullErrorMessages(logs);
+  console.log({ errorLines });
 
   for (const errorLine of errorLines) {
     const filePath = errorLine.filePath;
@@ -1091,7 +1124,7 @@ async function analyzeAndFixErrors(logs, attempt) {
         fixedAnyFile = true;
 
         if (VERBOSE) {
-          console.log(`ℹ️${result.fixExplanation || "Fix applied successfully."}\n`);
+          console.log(`ℹ️ ${result.fixExplanation || 'Fix applied successfully.'}\n`);
         }
       } catch (err) {
         console.error(`❌ Failed to process ${filePath}: ${err.message}`);
@@ -1102,6 +1135,36 @@ async function analyzeAndFixErrors(logs, attempt) {
   return fixedAnyFile;
 }
 
+// -------------------------------------------------------------------------------------
+// Build attempts
+// -------------------------------------------------------------------------------------
+async function checkProjectHealth() {
+  console.log('🚀 Starting project build...');
+  let attempt = 1;
+
+  while (attempt <= MAX_BUILD_ATTEMPTS) {
+    try {
+      console.log(`🔄 Attempt ${attempt} to build the project...`);
+      execSync(`${PACKAGE_MANAGER} run build`, { stdio: 'pipe' });
+      console.log('✅ Build succeeded!');
+      return true; // Exit if build is successful
+    } catch (error) {
+      console.error(`❌ Build failed on attempt ${attempt}. Parsing errors: ${error.message}`);
+      const logs = error.stderr.toString();
+      const fixed = await analyzeAndFixErrors(logs, attempt);
+
+      if (!fixed) {
+        console.error('⚠️ Errors could not be fixed. Halting further attempts.');
+        return false;
+      }
+
+      attempt++;
+    }
+  }
+
+  console.error('❌ Project build failed after maximum attempts.');
+  return false;
+}
 
 // -------------------------------------------------------------------------------------
 // Main "run" function that orchestrates everything
@@ -1109,7 +1172,7 @@ async function analyzeAndFixErrors(logs, attempt) {
 (async function main() {
   try {
     if (VERBOSE) {
-      console.log("Parsing arguments and starting i18n setup script...");
+      console.log('Parsing arguments and starting i18n setup script...');
     }
 
     // 1) If interactive, prompt for locales
@@ -1169,17 +1232,17 @@ async function analyzeAndFixErrors(logs, attempt) {
       // 11) Verfy project health
       await checkProjectHealth();
 
-      // Done
-      console.log("\n🎉 Multilingual setup & refactoring complete!");
+      console.log('\n🎉 Multilingual setup & refactoring complete!');
       console.log(`Default locale: ${DEFAULT_LOCALE}`);
       console.log(`Additional locales: ${getAllLocales().slice(1).join(', ')}`);
       console.log(`Pages/app directory: ${pagesDir}`);
       console.log(`Components directory: ${componentsDir}`);
-      console.log(`LanguagePicker created at: ${path.join(componentsDir || '.', 'LanguagePicker.js')}`);
-      console.log("\nTry running your dev command (e.g., `yarn dev`) to confirm everything is working!\n");
-
+      console.log(
+        `LanguagePicker created at: ${path.join(componentsDir || '.', 'LanguagePicker.js')}`
+      );
+      console.log('\nTry running your dev command (e.g., `yarn dev`) to confirm everything is working!\n');
     } else {
-      console.log("\nℹ️No changes made to the project.");
+      console.log('\nℹ️No changes made to the project.');
     }
   } catch (error) {
     console.trace(error);
