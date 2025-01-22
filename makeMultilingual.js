@@ -44,7 +44,7 @@ let fetch;
 // -------------------------------------------------------------------------------------
 const DEFAULTS = {
   OPENAI_MODEL: 'gpt-4o-mini',
-  MAX_CONCURRENT_REQUESTS: 20,
+  MAX_CONCURRENT_REQUESTS: 30,
   DEFAULT_LOCALE: 'es',
   DEFAULT_ADDITIONAL_LOCALES: 'en,fr,de,zh,ar,pt,ru,ja',
   LOCALE_FOLDER: 'public/locales',
@@ -57,13 +57,11 @@ const COMPONENTS_CANDIDATES = ['components', 'src/components'];
 // ----- Reference costs (per 1K tokens) - last update 01/16/2025 ------
 const COST_PER_1K_TOKENS = {
   'input': {
-    'gpt-o1-mini': 0.003,
     'gpt-4o': 0.0025,
     'gpt-4o-mini': 0.00015,
     'gpt-4': 0.03,
   },
   'output': {
-    'gpt-o1-mini': 0.0120,
     'gpt-4o': 0.01,
     'gpt-4o-mini': 0.0006,
     'gpt-4': 0.06,
@@ -178,6 +176,18 @@ function parseArgs() {
   }
 }
 parseArgs();
+
+// -------------------------------------------------------------------------------------
+// Global Vars
+// -------------------------------------------------------------------------------------
+const previosFixIntentsByFile = {};
+
+// -------------------------------------------------------------------------------------
+// Consts
+// -------------------------------------------------------------------------------------
+const FIX_ERROR = "FIX_ERROR";
+const REFACTOR = "REFACTOR";
+const MAX_BUILD_ATTEMPTS = 5;
 
 // -------------------------------------------------------------------------------------
 // Basic prompt function (only used if not in unattended mode)
@@ -680,7 +690,7 @@ function estimateTokensForFiles(files) {
   for (const filePath of files) {
     const fileContent = fs.readFileSync(filePath, 'utf8');
     const overhead = 500; // approximate overhead
-    const combinedContent = getRefactorPrompt(fileContent, 0) + overhead;
+    const combinedContent = getTaskPrompt(REFACTOR, fileContent, 0) + overhead;
     // approximate token count: ~4 chars per token
     const charCount = combinedContent.length;
     const tokens = Math.ceil(charCount / 4);
@@ -705,7 +715,9 @@ async function processFiles(files) {
     await Promise.all(
       batch.map(async (filePath) => {
         try {
-          const result = await processFileWithOpenAI(filePath);
+          const fileContent = fs.readFileSync(filePath, 'utf8');
+          const prompt = getTaskPrompt(REFACTOR, fileContent);
+          const result = await processFileWithOpenAI(prompt, filePath);
           if (result.needsUpdate) {
             fs.writeFileSync(filePath, result.updatedCode, 'utf8');
             console.log(`✅ Updated file: ${filePath}`);
@@ -757,22 +769,25 @@ function extractUsedKeys(code) {
 }
 
 // Actually call OpenAI to refactor
-async function processFileWithOpenAI(filePath, retryCount = 0) {
-  const fileContent = fs.readFileSync(filePath, 'utf8');
-  const prompt = getRefactorPrompt(fileContent, retryCount);
-
+async function processFileWithOpenAI(prompt, filePath, retryCount = 0) {
+  console.log("processFileWithOpenAI - prompt", prompt)
+  const body = {
+    model: OPENAI_MODEL,
+    messages: [{ role: 'user', content: prompt }]
+  }
+  if (OPENAI_MODEL.includes('gpt-')) {
+    body.max_tokens = 4096;
+    body.temperature = 0.2;
+  } else {
+    body.max_completion_tokens = 3000;
+  }
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
     },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 3000,
-      temperature: 0.2,
-    }),
+    body: JSON.stringify(body)
   });
 
   if (!response.ok) {
@@ -788,11 +803,12 @@ async function processFileWithOpenAI(filePath, retryCount = 0) {
 
   let parsed;
   try {
+    console.log({gptMessage})
     parsed = JSON.parse(gptMessage.trim());
   } catch (err) {
     if (retryCount < 2) {
       console.warn(`Retrying ${filePath} due to JSON parse error...`);
-      return processFileWithOpenAI(filePath, retryCount + 1);
+      return processFileWithOpenAI(prompt, filePath, retryCount + 1);
     }
     throw new Error(`Failed to parse JSON: ${err.message}`);
   }
@@ -802,7 +818,7 @@ async function processFileWithOpenAI(filePath, retryCount = 0) {
     if (!validateUpdatedCode(parsed.updatedCode)) {
       if (retryCount < 2) {
         console.warn(`Retrying ${filePath} due to validation issues...`);
-        return processFileWithOpenAI(filePath, retryCount + 1);
+        return processFileWithOpenAI(prompt, filePath, retryCount + 1);
       }
       throw new Error("Validation failed for updated code after retries.");
     }
@@ -811,10 +827,12 @@ async function processFileWithOpenAI(filePath, retryCount = 0) {
   return parsed;
 }
 
-function getRefactorPrompt(fileContent, retryCount) {
-  let prompt = `
-You are a Next.js and i18n expert.
-Refactor the following code to add multilingual support using react-i18next:
+function getTaskPrompt(task, fileContent, retryCount = 0, compileErrors = "", previosFixIntents = []) {
+  let prompt = "You are a Next.js and i18n expert.";
+
+  switch (task) {
+    case FIX_ERROR:
+      prompt += `\nRefactor the following code to add multilingual support using react-i18next:
 1. Identify all user-facing strings and replace them with meaningful translation keys.
 2. Return ONLY valid JSON with the structure:
 {
@@ -828,19 +846,41 @@ Refactor the following code to add multilingual support using react-i18next:
 4. "updatedCode" must contain the full file content with updated references to translation keys, if changes are made.
 5. "translations" must include all original user-facing strings keyed by their new i18n keys.
 6. Do not include any additional comments, explanations, or code fences.
-7. Ensure the updated code compiles and retains functionality.
+7. IMPORTANT: Ensure the updated code compiles and retains functionality.
 8. Do not delete existing comments unless strictly necessary for functionality or to fix errors.
+9. Do not include any additional comments, explanations, or formatting like code blocks (\`\`\`).`;
+      break
 
-Here is the code:
-${fileContent}
+    case REFACTOR:
+      prompt += `\nFix the following code caused a build error:
+
+Current error: ${compileErrors}
+
+1. Do not include any additional comments, explanations, or formatting like code blocks (\`\`\`).
+2. Return ONLY valid JSON with the structure:
+{
+  "fixExplanation": "Short but detailed fix explanation.",
+  "updatedCode": "<full updated code>",
+}
 `;
+      break
+    default:
+      throw new Error("Invalid TASK identifier.");
+  }
+
+  prompt += `\nHere is the code to update:\n${fileContent}\n`;
+
+  if (previosFixIntents?.length > 0) {
+    prompt += `Prevous Fixes intents: ${previosFixIntents}`
+  }
 
   if (retryCount > 0) {
-    prompt = `The previous update attempt failed to produce valid JSON. Please correct it now:\n${prompt}`;
+    prompt = `*IMPORTANT: The previous update attempt failed to produce valid JSON. Please correct it now:\n${prompt}`;
   }
 
   return prompt;
 }
+
 
 function sanitizeCode(output) {
   // Remove triple backticks
@@ -918,18 +958,23 @@ async function openaiTranslateText(text, fromLang, toLang) {
 Text: "${text}".
 Return only the translation, with no extra commentary.`;
 
+  const body = {
+    model: OPENAI_MODEL,
+    messages: [{ role: 'user', content: prompt }],
+  }
+  if (OPENAI_MODEL.includes('gpt-')) {
+    body.max_tokens = 1000;
+    body.temperature = 0;
+  } else {
+    body.max_completion_tokens = 3000;
+  }
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
     },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1000,
-      temperature: 0,
-    }),
+    body: JSON.stringify(body)
   });
 
   if (!response.ok) {
@@ -941,6 +986,122 @@ Return only the translation, with no extra commentary.`;
   const translation = result?.choices?.[0]?.message?.content?.trim();
   return translation || text;
 }
+
+
+async function checkProjectHealth() {
+  console.log("🚀 Starting project build...");
+  let attempt = 1;
+
+  while (attempt <= MAX_BUILD_ATTEMPTS) {
+    try {
+      console.log(`🔄 Attempt ${attempt} to build the project...`);
+      execSync(`${PACKAGE_MANAGER} run build`, { stdio: 'pipe' });
+      console.log("✅ Build succeeded!");
+      return true; // Exit if build is successful
+    } catch (error) {
+      console.error(`❌ Build failed on attempt ${attempt}. Parsing errors: ${error.message}`);
+      const logs = error.stderr.toString();
+      const fixed = await analyzeAndFixErrors(logs, attempt);
+
+      if (!fixed) {
+        console.error("⚠️ Errors could not be fixed. Halting further attempts.");
+        return false;
+      }
+
+      attempt++;
+    }
+  }
+
+  console.error("❌ Project build failed after maximum attempts.");
+  return false;
+}
+
+
+function extractFullErrorMessages(logs) {
+  const errorMessages = [];
+  const lines = logs.split('\n');
+  let currentFilePath = null;
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index].trim();
+
+    if (line.includes('.tsx') || line.includes('.js')) {
+      // Capture the current file path
+      currentFilePath = line;
+      index++;
+      continue;
+    }
+
+    if (line.toLowerCase().includes('error:')) {
+      // Start collecting error details
+      const errorParts = [line];
+      index++;
+
+      // Collect all lines until a new "Error:" or file path
+      while (index < lines.length && !lines[index].includes('.tsx') && !lines[index].includes('.js')) {
+        errorParts.push(lines[index].trim());
+        index++;
+      }
+
+      // Add the full error message to the result
+      if (currentFilePath) {
+        errorMessages.push({
+          filePath: currentFilePath,
+          errorDescription: errorParts.join(' '),
+        });
+      }
+    } else {
+      index++;
+    }
+  }
+
+  return errorMessages;
+}
+
+async function analyzeAndFixErrors(logs, attempt) {
+
+  let fixedAnyFile = false;
+
+  const errorLines = extractFullErrorMessages(logs)
+
+  for (const errorLine of errorLines) {
+    const filePath = errorLine.filePath;
+    const fullPath = path.resolve(filePath);
+
+    if (fs.existsSync(fullPath)) {
+      try {
+        const fileContent = fs.readFileSync(fullPath, 'utf8');
+        const prompt = getTaskPrompt(
+          REFACTOR,
+          fileContent,
+          attempt - 1,
+          errorLine.errorDescription,
+          previosFixIntentsByFile[filePath] || []
+        );
+        const result = await processFileWithOpenAI(prompt, filePath);
+
+        if (!previosFixIntentsByFile[filePath]) {
+          previosFixIntentsByFile[filePath] = [];
+        }
+        previosFixIntentsByFile[filePath].push(result.fixExplanation);
+
+        fs.writeFileSync(fullPath, result.updatedCode, 'utf8');
+        console.log(`✅ Fixed ${filePath}`);
+        fixedAnyFile = true;
+
+        if (VERBOSE) {
+          console.log(`ℹ️${result.fixExplanation || "Fix applied successfully."}\n`);
+        }
+      } catch (err) {
+        console.error(`❌ Failed to process ${filePath}: ${err.message}`);
+      }
+    }
+  }
+
+  return fixedAnyFile;
+}
+
 
 // -------------------------------------------------------------------------------------
 // Main "run" function that orchestrates everything
@@ -984,7 +1145,7 @@ Return only the translation, with no extra commentary.`;
       stepCreateLocalesFolder();
 
       // 5) If we get here, do actual refactoring
-      console.log("🚀 Sending files to OpenAI in parallel...");
+      console.log(`🚀 Sending files ${eligibleFiles.length} to OpenAI in parallel...`);
       await processFiles(eligibleFiles);
       console.log("🎉 Finished i18n refactoring!");
 
@@ -996,14 +1157,17 @@ Return only the translation, with no extra commentary.`;
       // 7) Create LanguagePicker
       stepCreateLanguagePicker(componentsDir);
 
-      // 8) Install deps
-      stepInstallDependencies();
-
-      // 9) Create next-i18next.config.js
+      // 8) Create next-i18next.config.js
       stepCreateNextI18NextConfig();
+
+      // 9) Install deps
+      stepInstallDependencies();
 
       // 10) Update next.config.js
       stepUpdateNextConfig();
+
+      // 11) Verfy project health
+      await checkProjectHealth();
 
       // Done
       console.log("\n🎉 Multilingual setup & refactoring complete!");
