@@ -46,7 +46,7 @@ let fetch;
 // Default / Reference Config
 // -------------------------------------------------------------------------------------
 const DEFAULTS = {
-  OPENAI_MODEL: 'gpt-4o-mini',
+  OPENAI_MODEL: 'gpt-4o',
   MAX_CONCURRENT_REQUESTS: 30,
   DEFAULT_LOCALE: 'es',
   DEFAULT_ADDITIONAL_LOCALES: 'en,fr,de,zh,ar,pt,ru,ja',
