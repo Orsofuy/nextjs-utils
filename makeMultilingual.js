@@ -3,9 +3,10 @@
 /**
  * setup-i18n.js
  *
- * Adds i18n to Next.js with optional cost/dry-run checking, package-manager selection,
- * verbose mode for additional logging, scanning only specified directories (pages,
- * components, app, etc.), and skipping directly to the build step via `-b`.
+ * Adds i18n to Next.js using next-intl with optional cost/dry-run checking,
+ * package-manager selection, verbose mode for additional logging, scanning only
+ * specified directories (pages, components, app, etc.), and skipping directly
+ * to the build step via `-b`.
  *
  * Usage:
  *   node setup-i18n.js [options]
@@ -73,16 +74,16 @@ const COST_PER_1K_TOKENS = {
 // -------------------------------------------------------------------------------------
 // Parse Command-Line Arguments
 // -------------------------------------------------------------------------------------
-let UNATTENDED = false; 
+let UNATTENDED = false;
 let OPENAI_MODEL = DEFAULTS.OPENAI_MODEL;
 let MAX_CONCURRENT_REQUESTS = DEFAULTS.MAX_CONCURRENT_REQUESTS;
 let DEFAULT_LOCALE = DEFAULTS.DEFAULT_LOCALE;
 let ADDITIONAL_LOCALES = DEFAULTS.DEFAULT_ADDITIONAL_LOCALES;
 let LOCALE_FOLDER = DEFAULTS.LOCALE_FOLDER;
 let PACKAGE_MANAGER = DEFAULTS.PACKAGE_MANAGER;
-let DRY_RUN = false; 
-let VERBOSE = false; 
-let PAGES_DIR_OVERRIDE = null; 
+let DRY_RUN = false;
+let VERBOSE = false;
+let PAGES_DIR_OVERRIDE = null;
 let COMPONENTS_DIR_OVERRIDE = null;
 let BUILD_ONLY = false;
 
@@ -197,7 +198,7 @@ const previosFixIntentsByFile = {};
 // -------------------------------------------------------------------------------------
 const FIX_ERROR = 'FIX_ERROR';
 const REFACTOR = 'REFACTOR';
-const EXTRACT_ERRORS = 'EXTRACT_ERRORS'; 
+const EXTRACT_ERRORS = 'EXTRACT_ERRORS';
 const MAX_BUILD_ATTEMPTS = 5;
 
 // -------------------------------------------------------------------------------------
@@ -248,30 +249,24 @@ function getAllLocales() {
 }
 
 // -------------------------------------------------------------------------------------
-// Step 2: Install dependencies (using yarn, npm, or pnpm)
+// Step 2: Install next-intl (using yarn, npm, or pnpm)
 // -------------------------------------------------------------------------------------
 function stepInstallDependencies() {
-  console.log('📦 Installing next-i18next & i18n dependencies...');
+  console.log('📦 Installing next-intl ...');
 
-  const dependencies = [
-    'next-i18next',
-    'i18next',
-    'react-i18next',
-    'i18next-http-backend',
-    'i18next-browser-languagedetector',
-  ];
+  const dependencies = ['next-intl'];
 
   let installCommand;
   switch (PACKAGE_MANAGER) {
     case 'npm':
-      installCommand = `npm install --save-dev ${dependencies.join(' ')}`;
+      installCommand = `npm install --save ${dependencies.join(' ')}`;
       break;
     case 'pnpm':
-      installCommand = `pnpm add -D ${dependencies.join(' ')}`;
+      installCommand = `pnpm add ${dependencies.join(' ')}`;
       break;
     case 'yarn':
     default:
-      installCommand = `yarn add --dev ${dependencies.join(' ')}`;
+      installCommand = `yarn add ${dependencies.join(' ')}`;
       break;
   }
 
@@ -284,56 +279,7 @@ function stepInstallDependencies() {
 }
 
 // -------------------------------------------------------------------------------------
-// Step 3: Create/Update next-i18next.config.js
-// -------------------------------------------------------------------------------------
-function stepCreateNextI18NextConfig() {
-  const localesArray = getAllLocales();
-  console.log("🛠 Creating 'next-i18next.config.js'...");
-
-  const content = `
-module.exports = {
-  i18n: {
-    defaultLocale: "${DEFAULT_LOCALE}",
-    locales: [${localesArray.map((l) => `"${l}"`).join(', ')}],
-  },
-};
-`.trimStart();
-
-  fs.writeFileSync('next-i18next.config.js', content, 'utf8');
-  console.log("✅ next-i18next.config.js created/updated.");
-}
-
-// -------------------------------------------------------------------------------------
-// Step 4: Update next.config.js to reference i18n
-// -------------------------------------------------------------------------------------
-function stepUpdateNextConfig() {
-  if (!fs.existsSync('next.config.js')) {
-    fs.writeFileSync('next.config.js', 'module.exports = {};', 'utf8');
-  }
-
-  const fileData = fs.readFileSync('next.config.js', 'utf8');
-  if (!fileData.includes('next-i18next.config')) {
-    let updatedData = `const { i18n } = require('./next-i18next.config');\n` + fileData;
-
-    if (!updatedData.match(/module\.exports\s*=\s*{[^}]*i18n[^}]*}/s)) {
-      updatedData = updatedData.replace(
-        /module\.exports\s*=\s*{([\s\S]*?)};/,
-        `module.exports = {
-  $1,
-  i18n
-};`
-      );
-    }
-
-    fs.writeFileSync('next.config.js', updatedData, 'utf8');
-    console.log('✅ next.config.js updated to reference i18n config.');
-  } else {
-    console.log('ℹ️ next.config.js already references i18n. Skipping update.');
-  }
-}
-
-// -------------------------------------------------------------------------------------
-// Step 5: Create public/locales structure
+// Step 3: Create public/locales structure
 // -------------------------------------------------------------------------------------
 function stepCreateLocalesFolder() {
   const allLocales = getAllLocales();
@@ -356,7 +302,7 @@ function stepCreateLocalesFolder() {
 }
 
 // -------------------------------------------------------------------------------------
-// Updated helper to handle overrides & prompts if needed
+// Helper to handle overrides & prompts for pages/app and components directory
 // -------------------------------------------------------------------------------------
 async function detectOrPromptPagesComponentsDir(projectDir) {
   if (PAGES_DIR_OVERRIDE && COMPONENTS_DIR_OVERRIDE) {
@@ -495,7 +441,7 @@ function findFirstExistingCandidate(projectDir, candidates) {
 }
 
 // -------------------------------------------------------------------------------------
-// Step 6: Create a LanguagePicker component
+// Step: Create a LanguagePicker component that uses next-intl
 // -------------------------------------------------------------------------------------
 function stepCreateLanguagePicker(componentsDir) {
   const allLocales = getAllLocales();
@@ -508,28 +454,28 @@ function stepCreateLanguagePicker(componentsDir) {
 
   const jsArray = `[${allLocales.map((l) => `"${l}"`).join(', ')}]`;
 
-  const pickerPath = path.join(componentsDir, 'LanguagePicker.js');
+  const pickerPath = path.join(componentsDir, 'LanguagePicker.tsx');
+  // Using next-intl: <Link> with locale + useTranslations('common')
   const content = `
-import { useRouter } from 'next/router';
-import { useTranslation } from 'react-i18next';
+'use client';
+
+import Link from 'next-intl/link';
+import { useTranslations, useLocale } from 'next-intl';
 
 export default function LanguagePicker() {
-  const router = useRouter();
-  const { t } = useTranslation('common');
+  const t = useTranslations('common');
+  const currentLocale = useLocale();
 
   const availableLocales = ${jsArray};
 
-  const handleLanguageChange = (locale) => {
-    router.push(router.asPath, router.asPath, { locale });
-  };
-
   return (
     <div style={{ margin: '1rem 0' }}>
-      <h3>{t("Select Language")}:</h3>
+      <h3>{t('selectLanguage')}:</h3>
       {availableLocales.map((lng) => (
-        <button key={lng} onClick={() => handleLanguageChange(lng)}>
+        <Link key={lng} href="/" locale={lng} style={{ marginRight: '8px' }}>
           {lng.toUpperCase()}
-        </button>
+          {lng === currentLocale ? ' (current)' : ''}
+        </Link>
       ))}
     </div>
   );
@@ -537,11 +483,12 @@ export default function LanguagePicker() {
 `.trimStart();
 
   fs.writeFileSync(pickerPath, content, 'utf8');
-  console.log(`✅ Created LanguagePicker.js in '${componentsDir}'`);
+  console.log(`✅ Created LanguagePicker.tsx in '${componentsDir}'`);
+  console.log('ℹ️ Make sure you have a <NextIntlClientProvider> wrapping your app so translations work.');
 }
 
 // -------------------------------------------------------------------------------------
-// We define a function getEligibleFiles to recursively find files with some JSX content.
+// Gather candidate files for i18n refactoring
 // -------------------------------------------------------------------------------------
 function getEligibleFiles(dir) {
   let results = [];
@@ -559,9 +506,10 @@ function getEligibleFiles(dir) {
       const ext = path.extname(fullPath);
       if (validExtensions.includes(ext)) {
         const content = fs.readFileSync(fullPath, 'utf8');
+        // Heuristic: has JSX but does not yet have useTranslations('common') calls
         if (
-          /<[a-zA-Z]|jsx>/.test(content) && 
-          !content.includes('useTranslation') &&
+          /<[a-zA-Z]|jsx>/.test(content) &&
+          !content.includes('useTranslations') &&
           !content.includes('t(["\']')
         ) {
           results.push(fullPath);
@@ -595,7 +543,7 @@ async function runRefactorAndTranslations(directoriesToScan) {
   }
 
   if (eligibleFiles.length === 0) {
-    console.log('✅ No eligible files found for i18n refactoring in those directories. Skipping to auto-translation...');
+    console.log('✅ No eligible files found for i18n refactoring. Skipping to auto-translation...');
   } else {
     console.log(`Found ${eligibleFiles.length} file(s) to process with OpenAI...`);
     if (VERBOSE) {
@@ -607,8 +555,7 @@ async function runRefactorAndTranslations(directoriesToScan) {
   if (DRY_RUN) {
     await doApproximateCostCheck(eligibleFiles, true);
     return;
-  }
-  else if (!UNATTENDED) {
+  } else if (!UNATTENDED) {
     const proceed = await doApproximateCostCheck(eligibleFiles, false);
     if (!proceed) {
       console.log('Aborting per user choice. No OpenAI calls will be made.');
@@ -624,8 +571,8 @@ async function runRefactorAndTranslations(directoriesToScan) {
 // -------------------------------------------------------------------------------------
 async function doApproximateCostCheck(eligibleFiles, isDryRunMode) {
   const approxTokensNeeded = estimateTokensForFiles(eligibleFiles);
-  const inputRate = COST_PER_1K_TOKENS.input[OPENAI_MODEL] || 0.03; 
-  const outputRate = COST_PER_1K_TOKENS.output[OPENAI_MODEL] || 0.03; 
+  const inputRate = COST_PER_1K_TOKENS.input[OPENAI_MODEL] || 0.03;
+  const outputRate = COST_PER_1K_TOKENS.output[OPENAI_MODEL] || 0.03;
   const approxInputCost = (approxTokensNeeded / 1000) * inputRate;
   const approxOutputCost = (approxTokensNeeded / 1000) * outputRate;
 
@@ -636,7 +583,7 @@ async function doApproximateCostCheck(eligibleFiles, isDryRunMode) {
   console.log(`Estimated costs:`);
   console.log(`- input: ~$${approxInputCost.toFixed(4)} (at ${inputRate}/1k tokens)`);
   console.log(`- output: ~$${approxOutputCost.toFixed(4)} (at ${outputRate}/1k tokens)`);
-  console.log(`- TOTAL: ~$${(approxOutputCost + approxOutputCost).toFixed(4)}\n`);
+  console.log(`- TOTAL: ~$${(approxInputCost + approxOutputCost).toFixed(4)}\n`);
 
   if (isDryRunMode) {
     console.log('Dry-run mode only. No calls made.');
@@ -651,7 +598,7 @@ function estimateTokensForFiles(files) {
   let totalTokens = 0;
   for (const filePath of files) {
     const fileContent = fs.readFileSync(filePath, 'utf8');
-    const overhead = 500; 
+    const overhead = 500;
     const combinedContent = getTaskPrompt(REFACTOR, fileContent, 0) + overhead;
     const charCount = combinedContent.length;
     const tokens = Math.ceil(charCount / 4);
@@ -849,17 +796,18 @@ function getTaskPrompt(task, fileContent = '', retryCount = 0, compileErrors = '
   // Define the core instructions for each task in an object
   const taskPrompts = {
     REFACTOR: `
-You are a Next.js and i18n expert using react-i18next. 
+You are a Next.js and i18n expert using the "next-intl" package.
 You will receive a Next.js file that may or may not contain user-facing strings.
 
 Follow these rules carefully:
-1. Find user-facing strings and replace them with i18n keys, using react-i18next (\`t('...')\`).
-2. Add a "translations" object mapping each new key to its original string.
-3. Do NOT modify existing comments, formatting, or any code not strictly related to user-facing text.
-4. If partial i18n exists, reuse existing keys for matching strings; do not duplicate or rename them.
-5. If no changes are needed, set "needsUpdate" to false and leave "updatedCode" empty.
-6. Return ONLY valid JSON, with no code fences or extra commentary.
-7. The JSON structure must be:
+1. Find user-facing strings and replace them with \`t('some.key')\`, using \`useTranslations('common')\` from next-intl.
+2. Add an import statement for \`useTranslations\` from \`"next-intl"\` if not present.
+3. Add a "translations" object mapping each new key to its original string.
+4. Do NOT modify existing comments, formatting, console.log or any code not strictly related to end user user-facing text.
+5. If partial i18n exists, reuse existing keys for matching strings; do not duplicate or rename them.
+6. If no changes are needed, set "needsUpdate" to false and leave "updatedCode" empty.
+7. Return ONLY valid JSON, with no code fences or extra commentary.
+8. The JSON structure must be:
 
 {
   "needsUpdate": true | false,
@@ -870,9 +818,8 @@ Follow these rules carefully:
   }
 }
 
-8. The updated code must compile, preserve functionality, and keep all comments unchanged.
-9. Only add or remove import statements if strictly necessary (e.g., adding \`useTranslation\`).
-`,
+9. The updated code must compile, preserve functionality, and keep all existing comments intact.
+`.trim(),
 
     FIX_ERROR: `
 Fix the following code that caused a build error:
@@ -889,7 +836,7 @@ Rules:
 }
 
 3. Do not fix anything unrelated to the compile error. Keep all comments and formatting intact.
-`,
+`.trim(),
 
     EXTRACT_ERRORS: `
 We have a Next.js build log that may contain multiple errors.
@@ -911,7 +858,7 @@ Your task:
 
 4. If no errors are found, return "extractedErrors" as an empty array.
 5. If the log format is irregular, do your best to extract meaningful file paths and error descriptions.
-`
+`.trim(),
   };
 
   // Check if task is valid
@@ -920,12 +867,10 @@ Your task:
   }
 
   // Base prompt for the chosen task
-  let prompt = taskPrompts[task].trim();
+  let prompt = taskPrompts[task];
 
   // If we have file content, append it
   if (fileContent) {
-    // Use a phrase that won’t confuse the AI into rewriting everything
-    // (e.g., "Here is the code/log content:")
     prompt += `
 
 Here is the code/log content:
@@ -933,7 +878,7 @@ ${fileContent}
 `;
   }
 
-  // If we have previous fix attempts, include them so AI knows what went wrong before
+  // If we have previous fix attempts, include them so AI knows what went wrong
   if (previousFixIntents.length > 0) {
     prompt += `
 
@@ -949,7 +894,6 @@ ${previousFixIntents.join('\n')}
 
   return prompt;
 }
-
 
 function sanitizeCode(output) {
   let sanitized = output.replace(/^\s*```[a-zA-Z]*\s*|\s*```$/g, '');
@@ -1016,7 +960,7 @@ async function autoTranslateCommonJson() {
   }
 
   for (const batch of localeBatches) {
-    await Promise.all(batch.map(locale => translateLocale(locale)));
+    await Promise.all(batch.map((locale) => translateLocale(locale)));
   }
 
   // Write translated files
@@ -1031,7 +975,6 @@ async function autoTranslateCommonJson() {
     console.log(`✅ Wrote translations to ${localeCommonPath}`);
   }
 }
-
 
 async function openaiTranslateText(text, fromLang, toLang) {
   if (!fetch) {
@@ -1190,7 +1133,10 @@ async function checkProjectHealth() {
 
       const { pagesDir, componentsDir } = await detectOrPromptPagesComponentsDir(projectDir);
 
-      // 3) i18n Refactor & translations
+      // 3) Create public/locales
+      stepCreateLocalesFolder();
+
+      // 4) i18n Refactor & translations
       const directoriesToScan = [];
       if (pagesDir && fs.existsSync(pagesDir)) {
         directoriesToScan.push(pagesDir);
@@ -1202,36 +1148,30 @@ async function checkProjectHealth() {
       const eligibleFiles = await runRefactorAndTranslations(directoriesToScan);
 
       if (!!eligibleFiles && eligibleFiles.length > 0) {
-        // 4) Create public/locales
-        stepCreateLocalesFolder();
-
-        // 5) If we get here, do actual refactoring
-        console.log(`🚀 Sending files ${eligibleFiles.length} to OpenAI in parallel...`);
+        // Actually send files to OpenAI for i18n refactoring
+        console.log(`🚀 Sending files (${eligibleFiles.length}) to OpenAI in parallel...`);
         await processFiles(eligibleFiles);
-        console.log("🎉 Finished i18n refactoring!");
-
-        // 6) Auto-translate
-        console.log("🔤 Auto-translating from default locale to others...");
-        await autoTranslateCommonJson();
-        console.log("🎉 Done with auto-translation step!");
-
-        // 7) Create LanguagePicker
-        stepCreateLanguagePicker(componentsDir);
-
-        // 8) Create next-i18next.config.js
-        stepCreateNextI18NextConfig();
-
-        // 9) Install deps
-        stepInstallDependencies();
-
-        // 10) Update next.config.js
-        stepUpdateNextConfig();
+        console.log('🎉 Finished i18n refactoring!');
       } else {
         console.log('\nℹ️No changes made to the project (no i18n refactoring needed).');
       }
+
+      // 5) Auto-translate
+      console.log('🔤 Auto-translating from default locale to others...');
+      await autoTranslateCommonJson();
+      console.log('🎉 Done with auto-translation step!');
+
+      // 6) Create LanguagePicker
+      if (componentsDir) {
+        stepCreateLanguagePicker(componentsDir);
+      }
+
+      // 7) Install next-intl
+      stepInstallDependencies();
+      console.log('✅ next-intl installation complete.');
     }
 
-    // 11) Build step
+    // 8) Build step
     await checkProjectHealth();
 
     console.log('\n🎉 Done!');
