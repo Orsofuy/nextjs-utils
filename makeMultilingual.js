@@ -4,8 +4,8 @@
  * setup-i18n.js
  *
  * Adds i18n to Next.js with optional cost/dry-run checking, package-manager selection,
- * verbose mode for additional logging, and scanning only specified directories (pages,
- * components, app, etc.).
+ * verbose mode for additional logging, scanning only specified directories (pages,
+ * components, app, etc.), and skipping directly to the build step via `-b`.
  *
  * Usage:
  *   node setup-i18n.js [options]
@@ -23,6 +23,7 @@
  *   --dry-run            Only calculate approximate token usage & cost, then exit (no calls)
  *   --pages-dir          Manually specify your Next.js pages/app directory
  *   --components-dir     Manually specify your Next.js components directory
+ *   -b, --build-only     Skip all i18n setup steps & jump straight to build checks
  *
  * Environment variables:
  *   OPENAI_API_KEY   Your OpenAI API key must be set in the environment
@@ -30,6 +31,7 @@
  * Example:
  *   node setup-i18n.js --dry-run
  *   node setup-i18n.js -y -m gpt-4 -c 10 -l en -a "fr,de,it" -p npm
+ *   node setup-i18n.js -b
  */
 
 const fs = require('fs');
@@ -71,17 +73,18 @@ const COST_PER_1K_TOKENS = {
 // -------------------------------------------------------------------------------------
 // Parse Command-Line Arguments
 // -------------------------------------------------------------------------------------
-let UNATTENDED = false; // (i.e. -y/--yes)
+let UNATTENDED = false; 
 let OPENAI_MODEL = DEFAULTS.OPENAI_MODEL;
 let MAX_CONCURRENT_REQUESTS = DEFAULTS.MAX_CONCURRENT_REQUESTS;
 let DEFAULT_LOCALE = DEFAULTS.DEFAULT_LOCALE;
-let ADDITIONAL_LOCALES = DEFAULTS.DEFAULT_ADDITIONAL_LOCALES; // string, comma-separated
+let ADDITIONAL_LOCALES = DEFAULTS.DEFAULT_ADDITIONAL_LOCALES;
 let LOCALE_FOLDER = DEFAULTS.LOCALE_FOLDER;
 let PACKAGE_MANAGER = DEFAULTS.PACKAGE_MANAGER;
-let DRY_RUN = false; // (i.e. --dry-run)
-let VERBOSE = false; // (i.e. -v/--verbose)
-let PAGES_DIR_OVERRIDE = null; // (i.e. --pages-dir)
-let COMPONENTS_DIR_OVERRIDE = null; // (i.e. --components-dir)
+let DRY_RUN = false; 
+let VERBOSE = false; 
+let PAGES_DIR_OVERRIDE = null; 
+let COMPONENTS_DIR_OVERRIDE = null;
+let BUILD_ONLY = false;
 
 function printHelp() {
   console.log(`
@@ -100,6 +103,7 @@ Options:
   --dry-run            Only calculate approximate token usage & cost, then exit (no calls)
   --pages-dir          Manually specify your Next.js pages/app directory
   --components-dir     Manually specify your Next.js components directory
+  -b, --build-only     Skip all i18n setup steps & jump straight to build checks
 
 Environment variables:
   OPENAI_API_KEY   Your OpenAI API key must be set in the environment
@@ -107,6 +111,7 @@ Environment variables:
 Example:
   node ${path.basename(process.argv[1])} --dry-run
   node ${path.basename(process.argv[1])} -y -m gpt-4 -c 10 -l en -a "fr,de,it" -p npm
+  node ${path.basename(process.argv[1])} -b
 `);
 }
 
@@ -168,6 +173,11 @@ function parseArgs() {
         COMPONENTS_DIR_OVERRIDE = args[i + 1];
         i++;
         break;
+      case '-b':
+      case '--build-only':
+        BUILD_ONLY = true;
+        break;
+
       default:
         console.error(`Unknown argument: ${arg}`);
         printHelp();
@@ -187,7 +197,7 @@ const previosFixIntentsByFile = {};
 // -------------------------------------------------------------------------------------
 const FIX_ERROR = 'FIX_ERROR';
 const REFACTOR = 'REFACTOR';
-const EXTRACT_ERRORS = 'EXTRACT_ERRORS'; // NEW TASK for extracting errors from logs
+const EXTRACT_ERRORS = 'EXTRACT_ERRORS'; 
 const MAX_BUILD_ATTEMPTS = 5;
 
 // -------------------------------------------------------------------------------------
@@ -234,7 +244,6 @@ async function stepPromptForLocales() {
 function getAllLocales() {
   const splitted = ADDITIONAL_LOCALES.split(',');
   const trimmed = splitted.map((loc) => loc.trim()).filter(Boolean);
-  // Combine default + additional
   return [DEFAULT_LOCALE, ...trimmed];
 }
 
@@ -304,10 +313,8 @@ function stepUpdateNextConfig() {
 
   const fileData = fs.readFileSync('next.config.js', 'utf8');
   if (!fileData.includes('next-i18next.config')) {
-    // Insert the import statement at the top
     let updatedData = `const { i18n } = require('./next-i18next.config');\n` + fileData;
 
-    // Add i18n to the exported config if not present
     if (!updatedData.match(/module\.exports\s*=\s*{[^}]*i18n[^}]*}/s)) {
       updatedData = updatedData.replace(
         /module\.exports\s*=\s*{([\s\S]*?)};/,
@@ -352,7 +359,6 @@ function stepCreateLocalesFolder() {
 // Updated helper to handle overrides & prompts if needed
 // -------------------------------------------------------------------------------------
 async function detectOrPromptPagesComponentsDir(projectDir) {
-  // If user manually provided both overrides, just verify them:
   if (PAGES_DIR_OVERRIDE && COMPONENTS_DIR_OVERRIDE) {
     const verifiedPages = await verifyDirectory(PAGES_DIR_OVERRIDE, 'pages/app');
     const verifiedComponents = await verifyDirectory(COMPONENTS_DIR_OVERRIDE, 'components');
@@ -362,7 +368,6 @@ async function detectOrPromptPagesComponentsDir(projectDir) {
     };
   }
 
-  // If user manually provided one override, verify it, then auto-detect the other
   if (PAGES_DIR_OVERRIDE && !COMPONENTS_DIR_OVERRIDE) {
     const verifiedPages = await verifyDirectory(PAGES_DIR_OVERRIDE, 'pages/app');
     const autoComponents = findFirstExistingCandidate(projectDir, COMPONENTS_CANDIDATES);
@@ -372,7 +377,6 @@ async function detectOrPromptPagesComponentsDir(projectDir) {
         componentsDir: autoComponents,
       };
     }
-    // If no auto-detect for components, prompt user (if not UNATTENDED)
     const finalComponents = await promptDirectoryIfNeeded('components directory', COMPONENTS_CANDIDATES);
     return {
       pagesDir: verifiedPages,
@@ -404,9 +408,6 @@ async function detectOrPromptPagesComponentsDir(projectDir) {
   };
 }
 
-/**
- * If directory is valid, return absolute path, otherwise prompt if not UNATTENDED.
- */
 async function verifyDirectory(dirPath, label) {
   const fullPath = path.resolve(dirPath);
   if (fs.existsSync(fullPath) && fs.lstatSync(fullPath).isDirectory()) {
@@ -414,7 +415,6 @@ async function verifyDirectory(dirPath, label) {
   }
 
   if (UNATTENDED) {
-    // In unattended mode, if user-provided path is invalid, just error out
     throw new Error(`❌ The specified ${label} directory "${dirPath}" does not exist or is not a directory.`);
   } else {
     console.log(`❌ The specified ${label} directory "${dirPath}" is invalid. Please provide a valid path.`);
@@ -422,23 +422,15 @@ async function verifyDirectory(dirPath, label) {
   }
 }
 
-/**
- * Prompts user for a directory if auto-detect fails or user-provided path was invalid.
- */
 async function promptDirectoryIfNeeded(label, candidates) {
-  // Try auto-detect from the candidates
   const projectDir = process.cwd();
   const found = findFirstExistingCandidate(projectDir, candidates);
   if (found) {
     return found;
   }
-  // Otherwise, prompt
   return promptDirectory(label);
 }
 
-/**
- * Actually ask the user for a directory, verifying it exists.
- */
 async function promptDirectory(label, defaultValue = '.') {
   let result;
   while (!result) {
@@ -460,28 +452,19 @@ async function promptDirectory(label, defaultValue = '.') {
 // Helper: detectNextAppAndComponents
 // -------------------------------------------------------------------------------------
 async function detectNextAppAndComponents(projectDir) {
-  // 1. Check if it's a Next.js project (package.json or next.config.js)
   if (!isNextProject(projectDir)) {
     throw new Error(`❌ No Next.js project detected!`);
   }
 
-  // 2. Find the first existing "pages/app" directory
   const appDir = findFirstExistingCandidate(projectDir, PAGES_CANDIDATES);
-
-  // 3. Find the first existing "components" directory
   const componentsDir = findFirstExistingCandidate(projectDir, COMPONENTS_CANDIDATES);
 
-  // 4. If neither is found, we throw an error so we can proceed to prompt or fail
   if (!appDir && !componentsDir) {
     throw new Error(`❌ No common Next.js "pages/app" or "components" directory found.`);
   }
-  // We'll allow partial detection; if only one is found, that's still okay
   return { appDir, componentsDir };
 }
 
-/**
- * Checks if the project contains a 'next' dependency or a 'next.config.js' file.
- */
 function isNextProject(projectDir) {
   const packageJsonPath = path.join(projectDir, 'package.json');
   let foundNext = false;
@@ -501,10 +484,6 @@ function isNextProject(projectDir) {
   return foundNext || hasNextConfig;
 }
 
-/**
- * Loops through a list of possible directory candidates.
- * Returns the *first* one that exists on disk or `undefined` if none exist.
- */
 function findFirstExistingCandidate(projectDir, candidates) {
   for (const candidate of candidates) {
     const fullPath = path.join(projectDir, candidate);
@@ -580,9 +559,8 @@ function getEligibleFiles(dir) {
       const ext = path.extname(fullPath);
       if (validExtensions.includes(ext)) {
         const content = fs.readFileSync(fullPath, 'utf8');
-        // Must have some JSX-ish syntax, and not already using i18n
         if (
-          /<[a-zA-Z]|jsx>/.test(content) && // indicates some JSX or HTML-like syntax
+          /<[a-zA-Z]|jsx>/.test(content) && 
           !content.includes('useTranslation') &&
           !content.includes('t(["\']')
         ) {
@@ -597,9 +575,6 @@ function getEligibleFiles(dir) {
 }
 
 async function runRefactorAndTranslations(directoriesToScan) {
-  // We'll embed the entire logic that was in refactor-i18n.js here.
-
-  // We need to load fetch dynamically in Node < 18
   if (!fetch) {
     const { default: f } = await import('node-fetch');
     fetch = f;
@@ -611,7 +586,6 @@ async function runRefactorAndTranslations(directoriesToScan) {
     return;
   }
 
-  // Gather eligible files from the specified directories:
   let eligibleFiles = [];
   for (const dir of directoriesToScan) {
     if (dir && fs.existsSync(dir)) {
@@ -630,13 +604,10 @@ async function runRefactorAndTranslations(directoriesToScan) {
     }
   }
 
-  // DRY_RUN scenario
   if (DRY_RUN) {
-    // Show cost estimate and then exit
     await doApproximateCostCheck(eligibleFiles, true);
     return;
   }
-  // Otherwise, if interactive, confirm cost
   else if (!UNATTENDED) {
     const proceed = await doApproximateCostCheck(eligibleFiles, false);
     if (!proceed) {
@@ -653,17 +624,15 @@ async function runRefactorAndTranslations(directoriesToScan) {
 // -------------------------------------------------------------------------------------
 async function doApproximateCostCheck(eligibleFiles, isDryRunMode) {
   const approxTokensNeeded = estimateTokensForFiles(eligibleFiles);
-  const inputRate = COST_PER_1K_TOKENS.input[OPENAI_MODEL] || 0.03; // fallback
-  const outputRate = COST_PER_1K_TOKENS.output[OPENAI_MODEL] || 0.03; // fallback
+  const inputRate = COST_PER_1K_TOKENS.input[OPENAI_MODEL] || 0.03; 
+  const outputRate = COST_PER_1K_TOKENS.output[OPENAI_MODEL] || 0.03; 
   const approxInputCost = (approxTokensNeeded / 1000) * inputRate;
   const approxOutputCost = (approxTokensNeeded / 1000) * outputRate;
 
   console.log(`\n--- COST ESTIMATE ---`);
   console.log(`Files count: ${eligibleFiles.length}`);
   console.log(`Model: ${OPENAI_MODEL}`);
-  console.log(
-    `Approx. input tokens needed: ${approxTokensNeeded} (using same to calculate output)`
-  );
+  console.log(`Approx. input tokens needed: ${approxTokensNeeded} (using same to calculate output)`);
   console.log(`Estimated costs:`);
   console.log(`- input: ~$${approxInputCost.toFixed(4)} (at ${inputRate}/1k tokens)`);
   console.log(`- output: ~$${approxOutputCost.toFixed(4)} (at ${outputRate}/1k tokens)`);
@@ -682,9 +651,8 @@ function estimateTokensForFiles(files) {
   let totalTokens = 0;
   for (const filePath of files) {
     const fileContent = fs.readFileSync(filePath, 'utf8');
-    const overhead = 500; // approximate overhead
+    const overhead = 500; 
     const combinedContent = getTaskPrompt(REFACTOR, fileContent, 0) + overhead;
-    // approximate token count: ~4 chars per token
     const charCount = combinedContent.length;
     const tokens = Math.ceil(charCount / 4);
     totalTokens += tokens;
@@ -698,7 +666,6 @@ function estimateTokensForFiles(files) {
 async function processFiles(files) {
   const allNewKeys = {};
 
-  // concurrency
   const batches = [];
   for (let i = 0; i < files.length; i += MAX_CONCURRENT_REQUESTS) {
     batches.push(files.slice(i, i + MAX_CONCURRENT_REQUESTS));
@@ -715,7 +682,6 @@ async function processFiles(files) {
             fs.writeFileSync(filePath, result.updatedCode, 'utf8');
             console.log(`✅ Updated file: ${filePath}`);
 
-            // Collect used keys
             const usedKeys = extractUsedKeys(result.updatedCode);
             for (const [k, originalText] of Object.entries(result.translations)) {
               if (usedKeys.has(k)) {
@@ -750,7 +716,6 @@ function updateCommonJson(newKeys, locales) {
   });
 }
 
-// Scan updated code for 't("key")' usage
 function extractUsedKeys(code) {
   const pattern = /t\((["'])([^"']+)\1\)/g;
   const usedKeys = new Set();
@@ -761,7 +726,6 @@ function extractUsedKeys(code) {
   return usedKeys;
 }
 
-// Actually call OpenAI to refactor
 async function processFileWithOpenAI(prompt, filePath, retryCount = 0) {
   if (!fetch) {
     const { default: f } = await import('node-fetch');
@@ -823,7 +787,7 @@ async function processFileWithOpenAI(prompt, filePath, retryCount = 0) {
   return parsed;
 }
 
-// NEW HELPER for logs-based processing, similar to processFileWithOpenAI but no real file path
+// NEW HELPER for logs-based processing
 async function processLogsWithOpenAI(logs, retryCount = 0) {
   if (!fetch) {
     const { default: f } = await import('node-fetch');
@@ -874,7 +838,6 @@ async function processLogsWithOpenAI(logs, retryCount = 0) {
     throw new Error(`Failed to parse JSON: ${err.message}`);
   }
 
-  // We expect a structure like { "extractedErrors": [ ... ] }
   if (!parsed.extractedErrors || !Array.isArray(parsed.extractedErrors)) {
     throw new Error('Missing or invalid "extractedErrors" in the AI response.');
   }
@@ -882,93 +845,113 @@ async function processLogsWithOpenAI(logs, retryCount = 0) {
   return parsed.extractedErrors;
 }
 
-function getTaskPrompt(task, fileContent = undefined, retryCount = 0, compileErrors = '', previosFixIntents = []) {
-  let prompt = 'You are a Next.js and i18n expert.';
+function getTaskPrompt(task, fileContent = '', retryCount = 0, compileErrors = '', previousFixIntents = []) {
+  // Define the core instructions for each task in an object
+  const taskPrompts = {
+    REFACTOR: `
+You are a Next.js and i18n expert using react-i18next. 
+You will receive a Next.js file that may or may not contain user-facing strings.
 
-  switch (task) {
-    case REFACTOR:
-      prompt += `\nRefactor the following code to add multilingual support using react-i18next:
-1. Identify all user-facing strings and replace them with meaningful translation keys.
-2. Return ONLY valid JSON with the structure:
+Follow these rules carefully:
+1. Find user-facing strings and replace them with i18n keys, using react-i18next (\`t('...')\`).
+2. Add a "translations" object mapping each new key to its original string.
+3. Do NOT modify existing comments, formatting, or any code not strictly related to user-facing text.
+4. If partial i18n exists, reuse existing keys for matching strings; do not duplicate or rename them.
+5. If no changes are needed, set "needsUpdate" to false and leave "updatedCode" empty.
+6. Return ONLY valid JSON, with no code fences or extra commentary.
+7. The JSON structure must be:
+
 {
-  "needsUpdate": true/false,
-  "updatedCode": "<full updated code if needed, otherwise empty>",
+  "needsUpdate": true | false,
+  "updatedCode": "<entire updated file if needed or empty string>",
   "translations": {
-    "<translationKey>": "<original string>"
+    "some.key": "Original string",
+    ...
   }
 }
-3. If no user-facing strings are detected, set "needsUpdate" to false and leave "updatedCode" empty.
-4. "updatedCode" must contain the full file content with updated references to translation keys, if changes are made.
-5. "translations" must include all original user-facing strings keyed by their new i18n keys.
-6. Do not include any additional comments, explanations, or code fences.
-7. IMPORTANT: Ensure the updated code compiles and retains functionality.
-8. Do not delete existing comments.
-9. Do modify any import path.
-10. Do not include any additional comments, explanations, or formatting like code blocks (\`\`\`).`;
-      break;
 
-    case FIX_ERROR:
-      prompt += `\nFix the following code caused a build error:
+8. The updated code must compile, preserve functionality, and keep all comments unchanged.
+9. Only add or remove import statements if strictly necessary (e.g., adding \`useTranslation\`).
+`,
+
+    FIX_ERROR: `
+Fix the following code that caused a build error:
 
 Current error: ${compileErrors}
 
-1. Do not include any additional comments, explanations, or formatting like code blocks (\`\`\`).
-2. Return ONLY valid JSON with the structure:
-{
-  "fixExplanation": "Short but detailed fix explanation.",
-  "updatedCode": "<full updated code>"
-}`;
-      break;
+Rules:
+1. Return ONLY valid JSON. No code fences or extra commentary.
+2. The JSON must have this structure:
 
-    case EXTRACT_ERRORS:
-      prompt += `
-We have a Next.js build log that may contain multiple errors with various syntax. 
-Please parse all errors and produce a standardized JSON. 
-- Return ONLY valid JSON, no extra commentary or code fences.
-- The JSON must have this structure:
+{
+  "fixExplanation": "Short but detailed fix explanation",
+  "updatedCode": "<full updated code>"
+}
+
+3. Do not fix anything unrelated to the compile error. Keep all comments and formatting intact.
+`,
+
+    EXTRACT_ERRORS: `
+We have a Next.js build log that may contain multiple errors.
+
+Your task:
+1. Parse all errors and return them in a standardized JSON.
+2. Return ONLY valid JSON, no extra commentary.
+3. The JSON must have this structure:
 
 {
   "extractedErrors": [
     {
-      "filePath": "Absolute or relative path to file (if any).",
-      "errorDescription": "The full error message/description.",
-      "fixProposal": "A short high-level fix suggestion for that error."
+      "filePath": "Absolute or relative path to file (if any)",
+      "errorDescription": "The full error message/description"
     },
     ...
   ]
 }
 
-- If no errors, "extractedErrors" can be an empty array.
-- Do not include any explanation outside of that JSON.
+4. If no errors are found, return "extractedErrors" as an empty array.
+5. If the log format is irregular, do your best to extract meaningful file paths and error descriptions.
+`
+  };
 
-Here is the entire build log to parse:
+  // Check if task is valid
+  if (!Object.prototype.hasOwnProperty.call(taskPrompts, task)) {
+    throw new Error('Invalid TASK identifier.');
+  }
+
+  // Base prompt for the chosen task
+  let prompt = taskPrompts[task].trim();
+
+  // If we have file content, append it
+  if (fileContent) {
+    // Use a phrase that won’t confuse the AI into rewriting everything
+    // (e.g., "Here is the code/log content:")
+    prompt += `
+
+Here is the code/log content:
 ${fileContent}
-
-If the format is not perfect, try your best to extract meaningful "filePath", "errorDescription", and a short "fixProposal" from each error.
 `;
-      break;
-
-    default:
-      throw new Error('Invalid TASK identifier.');
   }
 
-  if (!!fileContent) {
-    prompt += `\nHere is the code/log content:\n${fileContent}\n`;
+  // If we have previous fix attempts, include them so AI knows what went wrong before
+  if (previousFixIntents.length > 0) {
+    prompt += `
+
+Previous fix attempts:
+${previousFixIntents.join('\n')}
+`;
   }
 
-  if (previosFixIntents?.length > 0) {
-    prompt += `Prevous Fixes intents: ${previosFixIntents}`;
-  }
-
+  // If we're retrying because the AI produced invalid JSON, prepend a warning
   if (retryCount > 0) {
-    prompt = `*IMPORTANT: The previous update attempt failed to produce valid JSON. Please correct it now:\n${prompt}`;
+    prompt = `IMPORTANT: The previous attempt failed to produce valid JSON. Please correct it.\n\n${prompt}`;
   }
 
   return prompt;
 }
 
+
 function sanitizeCode(output) {
-  // Remove triple backticks
   let sanitized = output.replace(/^\s*```[a-zA-Z]*\s*|\s*```$/g, '');
   if (!sanitized.endsWith('\n')) {
     sanitized += '\n';
@@ -981,7 +964,6 @@ function validateUpdatedCode(newCode) {
     console.error('Validation failed: Updated code is empty.');
     return false;
   }
-  // We could do more checks, but let's keep it simple.
   return true;
 }
 
@@ -1006,26 +988,38 @@ async function autoTranslateCommonJson() {
 
   const translationsPerLocale = {};
 
-  for (const locale of additionalLocales) {
+  // Helper to process translation for a single locale
+  async function translateLocale(locale) {
     console.log(`Translating from ${DEFAULT_LOCALE} to ${locale}...`);
-    translationsPerLocale[locale] = {};
+    const translations = {};
 
     for (const [key, value] of Object.entries(defaultData)) {
       if (!value || typeof value !== 'string') {
-        translationsPerLocale[locale][key] = value;
+        translations[key] = value;
         continue;
       }
       try {
         const translatedText = await openaiTranslateText(value, DEFAULT_LOCALE, locale);
-        translationsPerLocale[locale][key] = translatedText;
+        translations[key] = translatedText;
       } catch (err) {
         console.error(`Error translating key "${key}": ${err.message}`);
-        translationsPerLocale[locale][key] = value; // fallback
+        translations[key] = value;
       }
     }
+
+    translationsPerLocale[locale] = translations;
   }
 
-  // Merge translations to each locale's common.json
+  const localeBatches = [];
+  for (let i = 0; i < additionalLocales.length; i += MAX_CONCURRENT_REQUESTS) {
+    localeBatches.push(additionalLocales.slice(i, i + MAX_CONCURRENT_REQUESTS));
+  }
+
+  for (const batch of localeBatches) {
+    await Promise.all(batch.map(locale => translateLocale(locale)));
+  }
+
+  // Write translated files
   for (const locale of additionalLocales) {
     const localeCommonPath = path.join(LOCALE_FOLDER, locale, 'common.json');
     let existing = {};
@@ -1037,6 +1031,7 @@ async function autoTranslateCommonJson() {
     console.log(`✅ Wrote translations to ${localeCommonPath}`);
   }
 }
+
 
 async function openaiTranslateText(text, fromLang, toLang) {
   if (!fetch) {
@@ -1106,12 +1101,13 @@ async function analyzeAndFixErrors(logs, attempt) {
       try {
         const fileContent = fs.readFileSync(fullPath, 'utf8');
         const prompt = getTaskPrompt(
-          REFACTOR,
+          FIX_ERROR,
           fileContent,
           attempt - 1,
           errorLine.errorDescription,
           previosFixIntentsByFile[filePath] || []
         );
+
         const result = await processFileWithOpenAI(prompt, filePath);
 
         if (!previosFixIntentsByFile[filePath]) {
@@ -1147,7 +1143,7 @@ async function checkProjectHealth() {
       console.log(`🔄 Attempt ${attempt} to build the project...`);
       execSync(`${PACKAGE_MANAGER} run build`, { stdio: 'pipe' });
       console.log('✅ Build succeeded!');
-      return true; // Exit if build is successful
+      return true;
     } catch (error) {
       console.error(`❌ Build failed on attempt ${attempt}. Parsing errors: ${error.message}`);
       const logs = error.stderr.toString();
@@ -1175,75 +1171,70 @@ async function checkProjectHealth() {
       console.log('Parsing arguments and starting i18n setup script...');
     }
 
-    // 1) If interactive, prompt for locales
-    if (!UNATTENDED) {
-      await stepPromptForLocales();
-    } else {
-      console.log(
-        `Running unattended with defaults: default locale = ${DEFAULT_LOCALE}, additional = ${ADDITIONAL_LOCALES}`
-      );
+    // If we are NOT build-only, proceed with normal i18n setup steps
+    if (!BUILD_ONLY) {
+      // 1) If interactive, prompt for locales
+      if (!UNATTENDED) {
+        await stepPromptForLocales();
+      } else {
+        console.log(
+          `Running unattended with defaults: default locale = ${DEFAULT_LOCALE}, additional = ${ADDITIONAL_LOCALES}`
+        );
+      }
+
+      // 2) Detect or override pages & components dir
+      const projectDir = process.cwd();
+      if (!isNextProject(projectDir)) {
+        throw new Error(`❌ No Next.js project detected!`);
+      }
+
+      const { pagesDir, componentsDir } = await detectOrPromptPagesComponentsDir(projectDir);
+
+      // 3) i18n Refactor & translations
+      const directoriesToScan = [];
+      if (pagesDir && fs.existsSync(pagesDir)) {
+        directoriesToScan.push(pagesDir);
+      }
+      if (componentsDir && fs.existsSync(componentsDir)) {
+        directoriesToScan.push(componentsDir);
+      }
+
+      const eligibleFiles = await runRefactorAndTranslations(directoriesToScan);
+
+      if (!!eligibleFiles && eligibleFiles.length > 0) {
+        // 4) Create public/locales
+        stepCreateLocalesFolder();
+
+        // 5) If we get here, do actual refactoring
+        console.log(`🚀 Sending files ${eligibleFiles.length} to OpenAI in parallel...`);
+        await processFiles(eligibleFiles);
+        console.log("🎉 Finished i18n refactoring!");
+
+        // 6) Auto-translate
+        console.log("🔤 Auto-translating from default locale to others...");
+        await autoTranslateCommonJson();
+        console.log("🎉 Done with auto-translation step!");
+
+        // 7) Create LanguagePicker
+        stepCreateLanguagePicker(componentsDir);
+
+        // 8) Create next-i18next.config.js
+        stepCreateNextI18NextConfig();
+
+        // 9) Install deps
+        stepInstallDependencies();
+
+        // 10) Update next.config.js
+        stepUpdateNextConfig();
+      } else {
+        console.log('\nℹ️No changes made to the project (no i18n refactoring needed).');
+      }
     }
 
-    // 2) Detect or override pages & components dir
-    const projectDir = process.cwd();
-    if (!isNextProject(projectDir)) {
-      throw new Error(`❌ No Next.js project detected!`);
-    }
+    // 11) Build step
+    await checkProjectHealth();
 
-    const { pagesDir, componentsDir } = await detectOrPromptPagesComponentsDir(projectDir);
-
-    // 3) i18n Refactor & translations
-    const directoriesToScan = [];
-    if (pagesDir && fs.existsSync(pagesDir)) {
-      directoriesToScan.push(pagesDir);
-    }
-    if (componentsDir && fs.existsSync(componentsDir)) {
-      directoriesToScan.push(componentsDir);
-    }
-
-    const eligibleFiles = await runRefactorAndTranslations(directoriesToScan);
-
-    if (!!eligibleFiles && eligibleFiles.length > 0) {
-      // 4) Create public/locales
-      stepCreateLocalesFolder();
-
-      // 5) If we get here, do actual refactoring
-      console.log(`🚀 Sending files ${eligibleFiles.length} to OpenAI in parallel...`);
-      await processFiles(eligibleFiles);
-      console.log("🎉 Finished i18n refactoring!");
-
-      // 6) Finally, auto-translate from default locale to others
-      console.log("🔤 Auto-translating from default locale to others...");
-      await autoTranslateCommonJson();
-      console.log("🎉 Done with auto-translation step!");
-
-      // 7) Create LanguagePicker
-      stepCreateLanguagePicker(componentsDir);
-
-      // 8) Create next-i18next.config.js
-      stepCreateNextI18NextConfig();
-
-      // 9) Install deps
-      stepInstallDependencies();
-
-      // 10) Update next.config.js
-      stepUpdateNextConfig();
-
-      // 11) Verfy project health
-      await checkProjectHealth();
-
-      console.log('\n🎉 Multilingual setup & refactoring complete!');
-      console.log(`Default locale: ${DEFAULT_LOCALE}`);
-      console.log(`Additional locales: ${getAllLocales().slice(1).join(', ')}`);
-      console.log(`Pages/app directory: ${pagesDir}`);
-      console.log(`Components directory: ${componentsDir}`);
-      console.log(
-        `LanguagePicker created at: ${path.join(componentsDir || '.', 'LanguagePicker.js')}`
-      );
-      console.log('\nTry running your dev command (e.g., `yarn dev`) to confirm everything is working!\n');
-    } else {
-      console.log('\nℹ️No changes made to the project.');
-    }
+    console.log('\n🎉 Done!');
   } catch (error) {
     console.trace(error);
     process.exit(1);
