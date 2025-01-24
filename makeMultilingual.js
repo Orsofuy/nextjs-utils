@@ -46,7 +46,7 @@ let fetch;
 // Default / Reference Config
 // -------------------------------------------------------------------------------------
 const DEFAULTS = {
-  OPENAI_MODEL: 'gpt-4o',
+  OPENAI_MODEL: 'gpt-4o-mini',
   MAX_CONCURRENT_REQUESTS: 30,
   DEFAULT_LOCALE: 'es',
   DEFAULT_ADDITIONAL_LOCALES: 'en,fr,de,zh,ar,pt,ru,ja',
@@ -800,25 +800,32 @@ You are a Next.js and i18n expert using the "next-intl" package.
 You will receive a Next.js file that may or may not contain user-facing strings.
 
 Follow these rules carefully:
-1. Find user-facing strings and replace them with \`t('some.key')\`, using \`useTranslations('common')\` from next-intl.
-2. Add an import statement for \`useTranslations\` from \`"next-intl"\` if not present.
-3. Add a "translations" object mapping each new key to its original string.
-4. Do NOT modify existing comments, formatting, console.log or any code not strictly related to end user user-facing text.
-5. If partial i18n exists, reuse existing keys for matching strings; do not duplicate or rename them.
-6. If no changes are needed, set "needsUpdate" to false and leave "updatedCode" empty.
-7. Return ONLY valid JSON, with no code fences or extra commentary.
-8. The JSON structure must be:
+1. Identify all user-facing strings, including:
+   - Static text within JSX elements.
+   - Text within attributes (e.g., alt, title).
+   - Dynamic strings constructed using template literals or string concatenation.
+2. Replace identified strings with \`t('namespace.key')\` using \`useTranslations('namespace')\` from next-intl.
+   - For pluralization, use the appropriate next-intl formatting methods.
+3. Add an import statement for \`useTranslations\` from \`"next-intl"\` if not present.
+4. Organize translation keys hierarchically based on the file structure or component hierarchy for better maintainability.
+5. Add a "translations" object mapping each new key to its original string.
+   - Ensure that dynamic parts of strings are represented using placeholders.
+6. Do NOT modify existing comments, formatting, console.log statements, or any code not strictly related to end-user-facing text.
+7. If partial i18n exists, reuse existing keys for matching strings; do not duplicate or rename them.
+8. If no changes are needed, set "needsUpdate" to false and leave "updatedCode" empty.
+9. Return ONLY valid JSON, with no code fences or extra commentary.
+10. The JSON structure must be:
 
 {
   "needsUpdate": true | false,
   "updatedCode": "<entire updated file if needed or empty string>",
   "translations": {
-    "some.key": "Original string",
+    "namespace.key": "Original string",
     ...
   }
 }
 
-9. The updated code must compile, preserve functionality, and keep all existing comments intact.
+11. The updated code must compile, preserve functionality, and keep all existing comments intact.
 `.trim(),
 
     FIX_ERROR: `
@@ -827,22 +834,25 @@ Fix the following code that caused a build error:
 Current error: ${compileErrors}
 
 Rules:
-1. Return ONLY valid JSON. No code fences or extra commentary.
-2. The JSON must have this structure:
+1. Analyze the error message and identify the root cause.
+2. Modify the code to resolve the error while preserving existing functionality.
+3. Ensure type safety and adherence to best practices.
+4. Return ONLY valid JSON. No code fences or extra commentary.
+5. The JSON must have this structure:
 
 {
   "fixExplanation": "Short but detailed fix explanation",
   "updatedCode": "<full updated code>"
 }
 
-3. Do not fix anything unrelated to the compile error. Keep all comments and formatting intact.
+6. Do not fix anything unrelated to the compile error. Keep all comments and formatting intact.
 `.trim(),
 
     EXTRACT_ERRORS: `
 We have a Next.js build log that may contain multiple errors.
 
 Your task:
-1. Parse all errors and return them in a standardized JSON.
+1. Parse all errors and categorize them based on their type (e.g., Syntax Error, Type Error, Module Not Found, etc.).
 2. Return ONLY valid JSON, no extra commentary.
 3. The JSON must have this structure:
 
@@ -850,6 +860,7 @@ Your task:
   "extractedErrors": [
     {
       "filePath": "Absolute or relative path to file (if any)",
+      "errorType": "Category of the error",
       "errorDescription": "The full error message/description"
     },
     ...
@@ -857,8 +868,48 @@ Your task:
 }
 
 4. If no errors are found, return "extractedErrors" as an empty array.
-5. If the log format is irregular, do your best to extract meaningful file paths and error descriptions.
+5. If the log format is irregular, do your best to extract meaningful file paths, error types, and descriptions.
 `.trim(),
+
+//     ADD_TYPE_DECLARATIONS: `
+// Some modules in your project lack TypeScript type declarations.
+
+// Your task:
+// 1. Identify modules without type declarations.
+// 2. Generate appropriate type declaration files (*.d.ts) for these modules.
+// 3. Ensure that the type declarations are accurate and comprehensive.
+// 4. Return ONLY valid JSON, no code fences or extra commentary.
+// 5. The JSON must have this structure:
+
+// {
+//   "typeDeclarations": {
+//     "module-name": "Type declaration content as a string",
+//     ...
+//   }
+// }
+// `.trim(),
+
+//     OPTIMIZE_IMPORTS: `
+// Organize and optimize the import statements in the provided Next.js file.
+
+// Rules:
+// 1. Group imports by their source:
+//    - External modules (e.g., React, next-intl) first.
+//    - Internal modules (e.g., components, utils) next.
+//    - Styles or assets last.
+// 2. Remove any unused imports.
+// 3. Order imports alphabetically within each group.
+// 4. Ensure there are no duplicate import statements.
+// 5. Return ONLY valid JSON, no code fences or extra commentary.
+// 6. The JSON structure must be:
+
+// {
+//   "needsUpdate": true | false,
+//   "updatedCode": "<entire updated file if needed or empty string>"
+// }
+
+// 7. If no changes are needed, set "needsUpdate" to false and leave "updatedCode" empty.
+// `.trim(),
   };
 
   // Check if task is valid
@@ -889,11 +940,12 @@ ${previousFixIntents.join('\n')}
 
   // If we're retrying because the AI produced invalid JSON, prepend a warning
   if (retryCount > 0) {
-    prompt = `IMPORTANT: The previous attempt failed to produce valid JSON. Please correct it.\n\n${prompt}`;
+    prompt = `IMPORTANT: The previous attempt failed to produce valid JSON. Ensure that your response strictly follows the JSON structure without any additional text, code fences, or commentary. Please adhere to the following format:\n\n${prompt}`;
   }
 
   return prompt;
 }
+
 
 function sanitizeCode(output) {
   let sanitized = output.replace(/^\s*```[a-zA-Z]*\s*|\s*```$/g, '');
@@ -1180,3 +1232,119 @@ async function checkProjectHealth() {
     process.exit(1);
   }
 })();
+
+
+
+TODO:
+- Create: 
+// next-intl.config.js
+module.exports = {
+  locales: ['en', 'es', 'fr'], // Add your supported locales here
+  defaultLocale: 'en',
+  pages: {
+    '*': ['common'], // Specify namespaces if using multiple
+  },
+};
+
+
+- Update:
+// next.config.js
+const withNextIntl = require('next-intl/plugin')();
+
+module.exports = withNextIntl({
+  // Your existing Next.js configuration options
+  reactStrictMode: true,
+  // Add any other configurations you need
+});
+
+3. Update Your RootLayout Component
+Your RootLayout should correctly wrap the application with NextIntlProvider and handle translations without using React hooks outside of components.
+
+
+This is how I defined the todo list above:
+he export errors you're encountering are primarily due to misconfigurations introduced while integrating internationalization (i18n) using the next-intl package. By ensuring that:
+
+next-intl is correctly configured with the necessary configuration files.
+Translation files are properly organized and accessible during both build and runtime.
+Metadata generation correctly handles translations without relying on React hooks.
+Environment variables are correctly set and accessed.
+You can resolve these export errors and ensure a smooth build process. Additionally, adopting best practices like error boundaries, static analysis tools, and thorough documentation will bolster the robustness and maintainability of your project.
+
+If you continue to face issues after implementing these solutions, consider providing more detailed build logs or specific error messages related to each failed path for further assistance.
+
+
+Please, update the script to be prepare for this needs processing the needed file with AI? What do you think?
+
+create file:
+import createRequest from 'next-intl/request';
+
+export default createRequest({
+  getTranslations: async (locale, namespace) => {
+    // Load translations dynamically (e.g., from a file or API)
+    const messages = await import(`./locales/${locale}/${namespace}.json`);
+    return messages.default;
+  },
+  locales: ['en', 'es'], // Supported locales
+  defaultLocale: 'en',   // Default locale
+});
+
+
+Create the Request Configuration File:
+
+Add the request.ts file in the expected location, e.g., src/i18n/request.ts. If you don't use a src directory, create it in the root i18n/request.ts.
+
+File: src/i18n/request.ts
+
+typescript
+Copy
+Edit
+import createRequest from 'next-intl/request';
+
+export default createRequest({
+  getTranslations: async (locale, namespace) => {
+    // Load translations dynamically (e.g., from a file or API)
+    const messages = await import(`./locales/${locale}/${namespace}.json`);
+    return messages.default;
+  },
+  locales: ['en', 'es'], // Supported locales
+  defaultLocale: 'en',   // Default locale
+});
+Ensure Your Translations Exist:
+
+Create a locales directory to store your JSON files for translations:
+
+css
+Copy
+Edit
+app/
+├── i18n/
+│   ├── request.ts
+│   ├── locales/
+│       ├── en/
+│       │   ├── common.json
+│       ├── es/
+│           ├── common.json
+Example common.json:
+
+json
+Copy
+Edit
+{
+  "welcome": "Welcome!",
+  "hello": "Hello, world!"
+}
+Specify a Custom Path in next.config.js (Optional):
+
+If you want to use a custom file path or name, update your next.config.js like this:
+
+javascript
+Copy
+Edit
+const createNextIntlPlugin = require('next-intl/plugin');
+
+const withNextIntl = createNextIntlPlugin('./src/i18n/request.ts');
+
+module.exports = withNextIntl({
+  reactStrictMode: true,
+});
+
