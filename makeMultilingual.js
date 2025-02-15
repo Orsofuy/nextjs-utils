@@ -98,7 +98,8 @@ const COST_PER_1K_TOKENS = {
 const TASK = {
   REFACTOR: 'REFACTOR',
   FIX_ERROR: 'FIX_ERROR',
-  EXTRACT_ERRORS: 'EXTRACT_ERRORS'
+  EXTRACT_ERRORS: 'EXTRACT_ERRORS',
+  PROCESS_ROOT_LAYOUT: 'PROCESS_ROOT_LAYOUT',
 };
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -115,6 +116,7 @@ let VERBOSE = false;
 let PAGES_DIR_OVERRIDE = null;
 let COMPONENTS_DIR_OVERRIDE = null;
 let BUILD_ONLY = false;
+let TRANSLATE_ONLY = false;
 
 // Compute supported locales (will be updated interactively if not unattended)
 let SUPPORTED_LOCALES = [
@@ -130,22 +132,23 @@ function printHelp() {
 Usage: ${path.basename(process.argv[1])} [options]
 
 Options:
-  -y, --yes             Run unattended (accept defaults)
-  -h, --help            Show this help message
-  -m, --model           Specify OpenAI model (default: ${DEFAULTS.OPENAI_MODEL})
-  -c, --concurrency     Max concurrent OpenAI requests (default: ${DEFAULTS.MAX_CONCURRENT_REQUESTS})
-  -l, --locale          Default locale (default: ${DEFAULTS.DEFAULT_LOCALE})
-  -a, --locales         Comma-separated additional locales (default: ${DEFAULTS.DEFAULT_ADDITIONAL_LOCALES})
-  -f, --folder          Locale folder path (default: ${DEFAULTS.LOCALE_FOLDER})
-  -p, --package-manager Which package manager to use (yarn|npm|pnpm) (default: ${DEFAULTS.PACKAGE_MANAGER})
-  -v, --verbose         Enable verbose mode
-  --dry-run             Only calculate token usage & cost; skip OpenAI calls
-  --pages-dir           Manually specify your Next.js pages/app directory
-  --components-dir      Manually specify your Next.js components directory
-  -b, --build-only      Skip i18n setup steps & jump to build checks
+  -y, --yes               Run unattended (accept defaults)
+  -h, --help              Show this help message
+  -m, --model             Specify OpenAI model (default: ${DEFAULTS.OPENAI_MODEL})
+  -c, --concurrency       Max concurrent OpenAI requests (default: ${DEFAULTS.MAX_CONCURRENT_REQUESTS})
+  -l, --locale            Default locale (default: ${DEFAULTS.DEFAULT_LOCALE})
+  -a, --locales           Comma-separated additional locales (default: ${DEFAULTS.DEFAULT_ADDITIONAL_LOCALES})
+  -f, --folder            Locale folder path (default: ${DEFAULTS.LOCALE_FOLDER})
+  -p, --package-manager   Which package manager to use (yarn|npm|pnpm) (default: ${DEFAULTS.PACKAGE_MANAGER})
+  -v, --verbose           Enable verbose mode
+  --dry-run               Only calculate token usage & cost; skip OpenAI calls
+  --pages-dir             Manually specify your Next.js pages/app directory
+  --components-dir        Manually specify your Next.js components directory
+  -b, --build-only        Skip i18n setup steps & jump to build checks
+  --translate-only, -t    Skip setup steps & only do auto-translation of common.json
 
 Environment variable:
-  OPENAI_API_KEY  Your OpenAI API key must be set.
+  OPENAI_API_KEY          Your OpenAI API key must be set.
 `);
 }
 
@@ -210,6 +213,11 @@ function parseArgs() {
       case '-b':
       case '--build-only':
         BUILD_ONLY = true;
+        break;
+      // HIGHLIGHT: New param
+      case '-t':
+      case '--translate-only':
+        TRANSLATE_ONLY = true;
         break;
       default:
         console.error(`Unknown argument: ${arg}`);
@@ -294,7 +302,7 @@ export default getRequestConfig(async () => {
   const locale = '${DEFAULT_LOCALE}';
   return {
     locale,
-    messages: (await import(\`../../messages/\${locale}.json\`)).default
+    messages: (await import(\`../../messages/\${locale}/common.json\`)).default
   };
 });
 `.trim();
@@ -381,8 +389,8 @@ async function stepInjectNextIntlProviderInRootLayout() {
     return;
   }
   console.log(`⚙️ NextIntlClientProvider not found. Using AI to patch RootLayout...`);
-  const systemPrompt = getTaskPromptForRootLayout();
-  const result = await processFileWithOpenAI(systemPrompt, rootLayoutPath);
+  const result = await processFileWithOpenAI(TASK.PROCESS_ROOT_LAYOUT, rootLayoutPath);
+  console.log({result})
   if (result && result.needsUpdate && result.updatedCode) {
     fs.writeFileSync(rootLayoutPath, result.updatedCode, 'utf8');
     console.log(`✅ Updated RootLayout with NextIntlClientProvider.`);
@@ -402,7 +410,7 @@ function findRootLayout() {
   return null;
 }
 
-function getTaskPromptForRootLayout() {
+function getTaskPromptForRootLayout(fileContent) {
   return `
 We have a Next.js 13 RootLayout file that is not configured for next-intl.
 It should:
@@ -414,6 +422,8 @@ Return ONLY valid JSON with this structure:
   "needsUpdate": true|false,
   "updatedCode": "<entire updated layout code>"
 }
+
+**RootLayout file**: "${fileContent}"
 `.trim();
 }
 
@@ -538,9 +548,7 @@ async function processFiles(files) {
     await Promise.all(
       batch.map(async (filePath) => {
         try {
-          const fileContent = fs.readFileSync(filePath, 'utf8');
-          const prompt = getTaskPrompt(TASK.REFACTOR, fileContent, 0);
-          const result = await processFileWithOpenAI(prompt, filePath);
+          const result = await processFileWithOpenAI(TASK.REFACTOR, filePath);
           if (result.needsUpdate) {
             fs.writeFileSync(filePath, result.updatedCode, 'utf8');
             console.log(`✅ Updated file: ${filePath}`);
@@ -579,7 +587,9 @@ function updateCommonJson(newKeys, locales) {
 }
 
 
-async function processFileWithOpenAI(prompt, filePath, retryCount = 0) {
+async function processFileWithOpenAI(promptKey, filePath, retryCount = 0, errorMsg ="", previousFixIntents) {
+  const prompt = getTaskPrompt(promptKey, fs.readFileSync(filePath, 'utf8'), retryCount + 1, errorMsg, previousFixIntents);
+
   if (!fetch) {
     const { default: f } = await import('node-fetch');
     fetch = f;
@@ -615,8 +625,7 @@ async function processFileWithOpenAI(prompt, filePath, retryCount = 0) {
   } catch (err) {
     if (retryCount < 2) {
       console.warn(`Retrying ${filePath} due to JSON parse error...`);
-      const newPrompt = getTaskPrompt(TASK.REFACTOR, fs.readFileSync(filePath, 'utf8'), retryCount + 1, err.message);
-      return processFileWithOpenAI(newPrompt, filePath, retryCount + 1);
+      return processFileWithOpenAI(promptKey, filePath, retryCount + 1, err.message);
     }
     throw new Error(`Failed to parse JSON: ${err.message}`);
   }
@@ -628,8 +637,7 @@ async function processFileWithOpenAI(prompt, filePath, retryCount = 0) {
       console.log(errorMsg)
       if (retryCount < 2) {
         console.warn(`Retrying ${filePath} due to validation issues...`);
-        const newPrompt = getTaskPrompt(TASK.REFACTOR, fs.readFileSync(filePath, 'utf8'), retryCount + 1, errorMsg);
-        return processFileWithOpenAI(newPrompt, filePath, retryCount + 1);
+        return processFileWithOpenAI(promptKey, filePath, retryCount + 1, errorMsg);
       }
       throw new Error('Validation failed for updated code after retries.');
     }
@@ -688,6 +696,29 @@ async function processLogsWithOpenAI(logs, retryCount = 0) {
 
 function getTaskPrompt(task, fileContent = '', retryCount = 0, compileErrors = '', previousFixIntents = []) {
   const taskPrompts = {
+    PROCESS_ROOT_LAYOUT: `
+We have a Next.js 13 RootLayout file that is incorrectly configured for "next-intl". Your task is to refactor this file so that the entire content within the <body> is wrapped in a single <NextIntlClientProvider> component. This ensures that all components (including Navbar, ThemeProvider, and children) have access to the translation context.
+
+**Requirements**:
+1. Import { NextIntlClientProvider } from "next-intl" and { getMessages, getLocale } from "next-intl/server".
+2. Retrieve the locale using await getLocale() and messages using await getMessages().
+3. Return the HTML structure with <html lang={locale}> while keeping the existing <head> content intact.
+4. Wrap the entire <body> content (including Navbar, ThemeProvider, and children) inside:
+   <NextIntlClientProvider locale={locale} messages={messages}> ... </NextIntlClientProvider>
+5. Ensure that "children" is rendered only once inside the provider.
+6. Preserve all existing code, comments, and styling, modifying only what is necessary to meet the above requirements.
+7. Return ONLY valid JSON with the following structure:
+   {
+     "needsUpdate": true|false,
+     "updatedCode": "<entire updated file>"
+   }
+   - If no changes are needed, set "needsUpdate": false and "updatedCode": "".
+   - Do not include any extra text or commentary outside this JSON.
+   - Don't wrap the code or answer with \`\`\`json or like
+
+**RootLayout file**: "${fileContent}"
+`
+.trim(),
     REFACTOR: `You are a Next.js and i18n expert using the "next-intl" package.
 Your goal is to internationalize the provided Next.js file by updating the code to use the t() method and retrieve the corresponding locales.json file.
 
@@ -720,13 +751,17 @@ Rules:
    - Ensure the file imports { useTranslations } from 'next-intl'.
    - Define const t = useTranslations('ComponentName'); (e.g., 'UserProfile').
 
-5. **Replace Literal Text**
+5. **For Async Components**
+   - Ensure the file imports { getTranslations } from 'next-intl/server' to call as hooks from within components.
+   - Define const t = await getTranslations('ComponentName'); (e.g., 'UserProfile').
+
+6. **Replace Literal Text**
    - Replace literal text with calls to t('<corresponding locales key>').
 
-6. **Preserve All Code and Comments**
+7. **Preserve All Code and Comments**
    - Keep the original code structure, spacing, and comments intact.
 
-7. **Return ONLY Valid JSON**
+8. **Return ONLY Valid JSON**
    - The JSON must have the following structure:
        {
          "needsUpdate": true|false,
@@ -920,13 +955,9 @@ async function autoTranslateCommonJson() {
     console.log(`Translating from ${DEFAULT_LOCALE} to ${locale}...`);
     const translations = {};
     for (const [key, value] of Object.entries(defaultData)) {
-      if (!value || typeof value !== 'string') {
-        translations[key] = value;
-        continue;
-      }
       try {
-        const translatedText = await openaiTranslateText(value, DEFAULT_LOCALE, locale);
-        translations[key] = translatedText;
+        const translatedText = await openaiTranslateText(JSON.stringify(value), DEFAULT_LOCALE, locale);
+        translations[key] = JSON.parse(translatedText);
       } catch (err) {
         console.error(`Error translating key "${key}": ${err.message}`);
         translations[key] = value;
@@ -956,14 +987,18 @@ async function autoTranslateCommonJson() {
   }
 }
 
-async function openaiTranslateText(text, fromLang, toLang) {
+async function openaiTranslateText(locale, fromLang, toLang) {
   if (!fetch) {
     const { default: f } = await import('node-fetch');
     fetch = f;
   }
-  const prompt = `Please translate the following text from ${fromLang} to ${toLang}:
-"${text}"
-Return only the translation, with no extra commentary.`;
+  const prompt = `Please translate the following json locale object values from ${fromLang} to ${toLang}:
+"${locale}"
+- Return only the same json locale but translated into the requested language, with no extra commentary nor \`\`\`json wrapper.
+- I will do a JSON.parse() of the entire answer, so make sure is a json compilant answer.
+`.trim();
+
+console.log({prompt})
   const body = {
     model: OPENAI_MODEL,
     messages: [{ role: 'user', content: prompt }],
@@ -988,7 +1023,7 @@ Return only the translation, with no extra commentary.`;
   }
   const result = await response.json();
   const translation = result?.choices?.[0]?.message?.content?.trim();
-  return translation || text;
+  return translation;
 }
 
 
@@ -1001,15 +1036,13 @@ async function analyzeAndFixErrors(logs, attempt) {
     const fullPath = path.resolve(filePath);
     if (fs.existsSync(fullPath)) {
       try {
-        const fileContent = fs.readFileSync(fullPath, 'utf8');
-        const prompt = getTaskPrompt(
+        const result = processFileWithOpenAI(
           TASK.FIX_ERROR,
-          fileContent,
+          filePath,
           attempt - 1,
           errorLine.errorDescription,
           previosFixIntentsByFile[filePath] || []
         );
-        const result = await processFileWithOpenAI(prompt, filePath);
         if (!previosFixIntentsByFile[filePath]) {
           previosFixIntentsByFile[filePath] = [];
         }
@@ -1060,62 +1093,86 @@ async function checkProjectHealth() {
         UNATTENDED,
         OPENAI_MODEL,
         DRY_RUN,
-        BUILD_ONLY
+        BUILD_ONLY,
+        TRANSLATE_ONLY
       });
     }
-    if (!BUILD_ONLY) {
-      // Step 1: Prompt for locales (if interactive)
-      if (!UNATTENDED) {
-        await stepPromptForLocales();
-      } else {
-        console.log(`Running unattended with default locale=${DEFAULT_LOCALE} and additional locales=${ADDITIONAL_LOCALES}`);
-      }
-      const projectDir = process.cwd();
-      if (!isNextProject(projectDir)) {
-        throw new Error('❌ No Next.js project detected!');
-      }
-      const { pagesDir, componentsDir } = await detectOrPromptPagesComponentsDir(projectDir);
 
-      // Step 2: Create next-intl.config.js file
-      stepCreateNextIntlConfigFile();
-
-      // Step 3: (Documentation Only) Skip updating next.config.js
-      console.log('ℹ️ Skipping next.config.js update (using no URL path i18n).');
-
-      // Step 4: Create translation folder structure ("messages")
-      stepCreateLocalesFolder();
-
-      // Step 5: Create or update request.ts configuration file
-      stepCreateOrUpdateRequestTs();
-
-      // Step 6: Run AI-based i18n refactoring on eligible files
-      const directoriesToScan = [];
-      if (pagesDir && fs.existsSync(pagesDir)) directoriesToScan.push(pagesDir);
-      if (componentsDir && fs.existsSync(componentsDir)) directoriesToScan.push(componentsDir);
-      const eligibleFiles = await runRefactorAndTranslations(directoriesToScan);
-      if (eligibleFiles && eligibleFiles.length > 0) {
-        console.log(`🚀 Sending ${eligibleFiles.length} file(s) to OpenAI for i18n refactoring...`);
-        await processFiles(eligibleFiles);
-        console.log('🎉 Finished i18n refactoring!');
-      } else {
-        console.log('ℹ️ No eligible files for refactoring.');
-      }
-
-      // Step 7: Auto-translate common.json from default locale to others
-      console.log('🔤 Auto-translating from default locale to others...');
-      await autoTranslateCommonJson();
-      console.log('🎉 Auto-translation complete!');
-
-      // Step 8: Create LanguagePicker component (if components directory exists)
-      if (componentsDir) {
-        stepCreateLanguagePicker(componentsDir);
-      }
-
-      // Step 9: Install next-intl dependency
-      stepInstallDependencies();
-      console.log('✅ next-intl installation complete.');
+    // -------------------------------------------------------------------
+    // 1) If user asked for "build-only", skip directly to build checks
+    // -------------------------------------------------------------------
+    if (BUILD_ONLY) {
+      const buildSuccess = await checkProjectHealth();
+      if (!buildSuccess) process.exit(1);
+      process.exit(0);
     }
-    // Step 10: Build check
+
+    // -------------------------------------------------------------------
+    // 2) If user asked for "translate-only", do that and exit
+    // -------------------------------------------------------------------
+    if (TRANSLATE_ONLY) {
+      console.log('🔤 [TRANSLATE-ONLY MODE] Auto-translating existing common.json files...');
+      await autoTranslateCommonJson();
+      console.log('🎉 Finished auto-translation. Exiting now.');
+      process.exit(0);
+    }
+
+    // -------------------------------------------------------------------
+    // Otherwise, perform full i18n setup
+    // -------------------------------------------------------------------
+    if (!UNATTENDED) {
+      await stepPromptForLocales();
+    } else {
+      console.log(`Running unattended with default locale=${DEFAULT_LOCALE} and additional locales=${ADDITIONAL_LOCALES}`);
+    }
+    const projectDir = process.cwd();
+    if (!isNextProject(projectDir)) {
+      throw new Error('❌ No Next.js project detected!');
+    }
+
+    // 2: Detect or prompt for pages/app + components directories
+    const { pagesDir, componentsDir } = await detectOrPromptPagesComponentsDir(projectDir);
+
+    // 3: Create next-intl.config.js file
+    stepCreateNextIntlConfigFile();
+
+    // 4: (Skipping next.config.js)...
+
+    // 5: Create translation folder structure
+    stepCreateLocalesFolder();
+
+    // 6: Create request.ts
+    stepCreateOrUpdateRequestTs();
+
+    // 7: Patch RootLayout with NextIntlClientProvider
+    await stepInjectNextIntlProviderInRootLayout();
+
+    // 8: AI-based i18n refactoring on pages/components
+    const directoriesToScan = [];
+    if (pagesDir && fs.existsSync(pagesDir)) directoriesToScan.push(pagesDir);
+    if (componentsDir && fs.existsSync(componentsDir)) directoriesToScan.push(componentsDir);
+    const eligibleFiles = await runRefactorAndTranslations(directoriesToScan);
+    if (eligibleFiles && eligibleFiles.length > 0) {
+      console.log(`🚀 Sending ${eligibleFiles.length} file(s) to OpenAI for i18n refactoring...`);
+      await processFiles(eligibleFiles); 
+      console.log('🎉 Finished i18n refactoring!');
+    } else {
+      console.log('ℹ️ No eligible files for refactoring.');
+    }
+
+    // 9: Auto-translate from default locale to others
+    console.log('🔤 Auto-translating from default locale to others...');
+    await autoTranslateCommonJson();
+    console.log('🎉 Auto-translation complete!');
+
+    // 10: Create LanguagePicker component
+    stepCreateLanguagePicker(componentsDir);
+
+    // 11: Install next-intl
+    stepInstallDependencies();
+    console.log('✅ next-intl installation complete.');
+
+    // 12: Build check
     const buildSuccess = await checkProjectHealth();
     if (!buildSuccess) process.exit(1);
     console.log('\n🎉 All steps completed successfully!');
@@ -1254,7 +1311,6 @@ function stepCreateLanguagePicker(componentsDir) {
     fs.mkdirSync(componentsDir, { recursive: true });
     console.log(`Created components directory: ${componentsDir}`);
   }
-  const jsArray = `[${allLocales.map(l => `"${l}"`).join(', ')}]`;
   const pickerPath = path.join(componentsDir, 'LanguagePicker.tsx');
   const content = `
 'use client';
@@ -1267,15 +1323,7 @@ const {Link, useRouter, usePathname, redirect} = createNavigation({
   // The locales your app supports
   locales: ["es", "en", "fr", "de", "zh", "ar", "pt", "ru", "ja"],
   // The default locale (optional)
-  defaultLocale: 'es',
-  // (Optional) For custom routing logic, provide getPathname:
-  // getPathname({locale, defaultLocale, pathname}) {
-  //   // For example, prefix non-default locales
-  //   if (locale && locale !== defaultLocale) {
-  //     return \`/${locale}${pathname}\`;
-  //   }
-  //   return pathname;
-  // }
+  defaultLocale: 'es'
 });
 
 // 2. Client usage (Link, useRouter, usePathname)
