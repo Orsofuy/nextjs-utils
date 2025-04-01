@@ -74,6 +74,7 @@ function printHelp() {
 // -------------------------------------------------------------------------------------
 // Config Loading
 // -------------------------------------------------------------------------------------
+
 function loadNextIntlConfig() {
     try {
         const configPath = path.resolve('next-intl.config.js');
@@ -97,8 +98,9 @@ function loadNextIntlConfig() {
 }
 
 // -------------------------------------------------------------------------------------
-// Core Logic
+// Core Logic Updates
 // -------------------------------------------------------------------------------------
+
 function findMissingKeys(reference, target) {
     const missing = {};
 
@@ -119,8 +121,76 @@ function findMissingKeys(reference, target) {
     return missing;
 }
 
+function deepMerge(target, source) {
+    for (const [key, value] of Object.entries(source)) {
+        if (typeof value === 'object' && !Array.isArray(value)) {
+            target[key] = deepMerge(target[key] || {}, value);
+        } else {
+            target[key] = value;
+        }
+    }
+    return target;
+}
+
+function flattenObject(obj, prefix = '') {
+    let entries = [];
+    for (const key in obj) {
+        const value = obj[key];
+        const currentPath = prefix ? `${prefix}.${key}` : key;
+        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+            entries = entries.concat(flattenObject(value, currentPath));
+        } else {
+            entries.push({ path: currentPath, value });
+        }
+    }
+    return entries;
+}
+
+function unflattenTranslations(translations) {
+    const result = {};
+    for (const { path: keyPath, translated } of translations) {
+        const parts = keyPath.split('.');
+        let current = result;
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            if (i === parts.length - 1) {
+                current[part] = translated;
+            } else {
+                current[part] = current[part] || {};
+                current = current[part];
+            }
+        }
+    }
+    return result;
+}
+
+async function processTranslationsConcurrently(items, targetLocale) {
+    const queue = [...items];
+    const results = [];
+    const MAX_CONCURRENT = DEFAULTS.MAX_CONCURRENT_REQUESTS;
+
+    async function worker() {
+        while (queue.length > 0) {
+            const item = queue.shift();
+            if (!item) return;
+            try {
+                const translated = await translateWithAI(item.value, targetLocale);
+                results.push({ path: item.path, translated });
+                if (VERBOSE) {
+                    console.log(`Translated ${item.path}: ${item.value} → ${translated}`);
+                }
+            } catch (error) {
+                console.error(`Error translating path ${item.path}: ${error.message}`);
+            }
+        }
+    }
+
+    const workers = Array(MAX_CONCURRENT).fill().map(() => worker());
+    await Promise.all(workers);
+    return results;
+}
+
 async function translateMissingKeys() {
-    console.log({DEFAULTS})
     const referencePath = path.join(DEFAULTS.LOCALE_FOLDER, DEFAULTS.REFERENCE_LOCALE, 'common.json');
     const referenceData = JSON.parse(fs.readFileSync(referencePath, 'utf8'));
 
@@ -141,7 +211,8 @@ async function translateMissingKeys() {
             continue;
         }
 
-        console.log(`🌐 ${locale}: Found ${countKeys(missing)} missing keys`);
+        const flattened = flattenObject(missing);
+        console.log(`🌐 ${locale}: Found ${flattened.length} missing keys`);
 
         if (DRY_RUN) {
             console.log('Dry run - would translate:', JSON.stringify(missing, null, 2));
@@ -149,53 +220,36 @@ async function translateMissingKeys() {
         }
 
         try {
-            const translated = await translateWithAI(missing, locale);
-            const merged = deepMerge(targetData, translated);
+            const translations = await processTranslationsConcurrently(flattened, locale);
+            const translatedObject = unflattenTranslations(translations);
+            const merged = deepMerge(targetData, translatedObject);
 
             fs.writeFileSync(targetPath,
                 JSON.stringify(merged, null, 2) + '\n',
                 'utf8'
             );
-            console.log(`✅ ${locale}: Updated common.json`);
+            console.log(`✅ ${locale}: Updated common.json with ${translations.length} translations`);
         } catch (error) {
             console.error(`❌ ${locale}: Error translating - ${error.message}`);
         }
     }
 }
 
-function countKeys(obj) {
-    let count = 0;
-    JSON.stringify(obj, (_, value) => {
-        if (typeof value === 'string') count++;
-        return value;
-    });
-    return count;
-}
-
-function deepMerge(target, source) {
-    for (const [key, value] of Object.entries(source)) {
-        if (typeof value === 'object' && !Array.isArray(value)) {
-            target[key] = deepMerge(target[key] || {}, value);
-        } else {
-            target[key] = value;
-        }
-    }
-    return target;
-}
-
 // -------------------------------------------------------------------------------------
 // OpenAI Integration
 // -------------------------------------------------------------------------------------
-async function translateWithAI(missingKeys, targetLocale) {
+
+async function translateWithAI(text, targetLocale) {
     if (!fetch) {
         const { default: f } = await import('node-fetch');
         fetch = f;
     }
 
-    const prompt = `Translate ONLY the values in this JSON from Spanish to ${targetLocale}. 
-Keep keys identical. Return valid JSON with same structure. No extra text.
+    const prompt = `Translate the following text from ${DEFAULTS.REFERENCE_LOCALE} to ${targetLocale}. 
+Preserve any placeholders like {this} in the text. Keep the translation concise and accurate.
+Respond only with the translated text without any explanations or formatting.
 
-${JSON.stringify(missingKeys, null, 2)}`;
+Text to translate: "${text}"`;
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -217,14 +271,8 @@ ${JSON.stringify(missingKeys, null, 2)}`;
     }
 
     const data = await response.json();
-    const content = data.choices[0].message.content;
-
-    try {
-        return JSON.parse(content);
-    } catch (error) {
-        console.error('Invalid JSON response:', content);
-        throw new Error('Failed to parse AI response');
-    }
+    const translatedText = data.choices[0].message.content.trim();
+    return translatedText.replace(/^"(.*)"$/, '$1'); // Remove surrounding quotes if present
 }
 
 // -------------------------------------------------------------------------------------
@@ -257,7 +305,6 @@ ${JSON.stringify(missingKeys, null, 2)}`;
 
         console.log('🎉 Translation completed successfully');
     } catch (error) {
-        console.error(error)
         console.error('❌ Fatal error:', error.message);
         process.exit(1);
     }
